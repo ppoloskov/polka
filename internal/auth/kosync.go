@@ -97,13 +97,14 @@ func (s *Service) KosyncGet(ctx context.Context, userID int64, document string) 
 
 // SaveOverall updates only the overall fraction of the reading progress
 // (a device that knows nothing about our chapters reported the position);
-// chapter, position and locator of an existing record are preserved.
+// chapter and position of an existing record are preserved, but its locator is
+// cleared: an unmappable device update must not appear to have an exact anchor.
 func (s *Service) SaveOverall(ctx context.Context, userID, bookID int64, overall float64) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO reading_progress (user_id, book_id, chapter, position, overall, locator, updated_at)
-		VALUES (?, ?, 0, 0, ?, '', strftime('%Y-%m-%d %H:%M:%f', 'now'))
+		INSERT INTO reading_progress (user_id, book_id, chapter, position, overall, locator, revision, updated_at)
+		VALUES (?, ?, 0, 0, ?, '', 1, strftime('%Y-%m-%d %H:%M:%f', 'now'))
 		ON CONFLICT (user_id, book_id) DO UPDATE
-		SET overall = excluded.overall, updated_at = excluded.updated_at`,
+		SET overall = excluded.overall, locator = '', revision = reading_progress.revision+1, updated_at = excluded.updated_at`,
 		userID, bookID, overall)
 	return err
 }

@@ -44,3 +44,19 @@ export const saveReaderPrefs = (prefs) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(prefs),
   });
+
+// FB2 saves carry a revision and file identity. Conflicts must reach the UI.
+export const saveFB2Progress = async (bookId, position, revision, digest) => {
+  const response = await fetch(api.buildUrl(`api/v1/read/${bookId}/progress`), {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...position, revision, digest }),
+  });
+  if (!response.ok) {
+    const error = new Error(await response.text());
+    error.status = response.status;
+    throw error;
+  }
+  return response.json();
+};

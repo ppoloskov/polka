@@ -174,8 +174,10 @@ Install [KOReader](https://koreader.rocks) on the device, then:
 2. **Progress sync**: in Polka's top bar open *E-reader*, set a device
    password; on the device: *Tools → Progress sync*, server address =
    your Polka URL, username = your Polka login, password = the device
-   password. Positions of books downloaded through Polka then follow you
-   between the device, the web reader and other KOReader devices.
+   password. KOReader devices can share positions for matching files. For
+   **FB2**, Polka also translates positions to and from the web reader;
+   other formats currently update the shelf percentage only. See
+   [FB2 progress sync](docs/fb2-progress-sync.md) for behavior and limits.
 
 ## Configuration
 

@@ -1,3 +1,4 @@
+import { captureFB2Position, restoreFB2Position, matchingFB2Progress } from "./fb2Position";
 import { t } from "../i18n";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
@@ -8,6 +9,7 @@ import {
   fetchReadMeta,
   localProgress,
   saveProgress,
+  saveFB2Progress,
   saveReaderPrefs,
 } from "../api/reader";
 import "./ReaderPage.css";
@@ -50,6 +52,15 @@ const ReaderPage = () => {
   const [immersive, setImmersive] = useState(false);
   const prefsSynced = useRef(false); // server prefs are authoritative once loaded
 
+  const [remoteProgress, setRemoteProgress] = useState(null);
+  const revision = useRef(0);
+  const digest = useRef("");
+  const restoring = useRef(true);
+  const interacted = useRef(false);
+  const latestPosition = useRef(null);
+  const saveQueue = useRef(Promise.resolve());
+  const syncBlocked = useRef(false);
+  const saveGeneration = useRef(0);
   const serverStored = useRef(false);
   const restoreTo = useRef(null); // {index, ratio} to jump to after render
   const appending = useRef(false);
@@ -82,7 +93,41 @@ const ReaderPage = () => {
     (index, ratio) => {
       const overall = totalRef.current > 0 ? Math.min(1, (index + ratio) / totalRef.current) : 0;
       if (serverStored.current) {
-        saveProgress(bookId, index, ratio, overall);
+        if (digest.current) {
+          if (restoring.current || !interacted.current || syncBlocked.current) return;
+          const locator = captureFB2Position(pageRef.current);
+          if (!locator) return;
+          const position = {
+            chapter: index,
+            position: ratio,
+            progress: overall,
+            locator,
+          };
+          const fileDigest = digest.current;
+          const generation = saveGeneration.current;
+          saveQueue.current = saveQueue.current.then(async () => {
+            if (syncBlocked.current || fileDigest !== digest.current || generation !== saveGeneration.current) return;
+            try {
+              const saved = await saveFB2Progress(bookId, position, revision.current, fileDigest);
+              if (fileDigest === digest.current && generation === saveGeneration.current)
+                revision.current = saved.revision;
+            } catch (err) {
+              if (err.status === 412) {
+                syncBlocked.current = true;
+                setError(err);
+              }
+              if (err.status === 409 && fileDigest === digest.current && generation === saveGeneration.current) {
+                syncBlocked.current = true;
+                saveGeneration.current++;
+                const remote = await fetchProgress(bookId).catch(() => null);
+                if (fileDigest !== digest.current) return;
+                setRemoteProgress(remote ?? { revision: revision.current });
+              }
+            }
+          });
+        } else {
+          saveProgress(bookId, index, ratio, overall);
+        }
       } else {
         localProgress.set(bookId, index, ratio);
       }
@@ -93,6 +138,13 @@ const ReaderPage = () => {
   // --- Startup: metadata + saved position ---
   useEffect(() => {
     let cancelled = false;
+    restoring.current = true;
+    interacted.current = false;
+    digest.current = "";
+    saveGeneration.current++;
+    syncBlocked.current = false;
+    latestPosition.current = null;
+    setRemoteProgress(null);
     Promise.all([fetchReadMeta(bookId), fetchProgress(bookId).catch(() => null)])
       .then(([m, prog]) => {
         if (cancelled) return;
@@ -101,9 +153,15 @@ const ReaderPage = () => {
           return undefined;
         }
         serverStored.current = Boolean(prog?.stored);
-        const saved = prog?.stored ? prog : localProgress.get(bookId);
+        revision.current = prog?.revision ?? 0;
+        digest.current = m.format === "fb2" ? (m.digest ?? "") : "";
+        const saved = matchingFB2Progress(prog?.stored ? prog : localProgress.get(bookId), digest.current);
         const index = Math.max(0, Math.min(Number(saved?.chapter ?? 0), m.chapters.length - 1));
-        restoreTo.current = { index, ratio: Number(saved?.position ?? 0) };
+        restoreTo.current = {
+          index,
+          ratio: Number(saved?.position ?? 0),
+          locator: saved?.locator,
+        };
         totalRef.current = m.chapters.length;
         setMeta(m);
         return fetchChapter(bookId, index).then((ch) => {
@@ -122,14 +180,24 @@ const ReaderPage = () => {
   // --- Jump to the saved position after the chapter renders ---
   useEffect(() => {
     if (!restoreTo.current || loaded.length === 0) return;
-    const { index, ratio } = restoreTo.current;
+    const { index, ratio, locator, save } = restoreTo.current;
+    restoring.current = true;
     restoreTo.current = null;
     requestAnimationFrame(() => {
       const el = pageRef.current?.querySelector(`[data-chapter="${index}"]`);
-      if (!el) return;
-      window.scrollTo(0, ratio > 0 ? el.offsetTop + ratio * el.offsetHeight - 80 : 0);
+      if (!el) {
+        restoring.current = false;
+        return;
+      }
+      if (!restoreFB2Position(el, locator)) {
+        window.scrollTo(0, ratio > 0 ? el.offsetTop + ratio * el.offsetHeight - 80 : 0);
+      }
+      requestAnimationFrame(() => {
+        restoring.current = false;
+        if (save) persist(index, ratio);
+      });
     });
-  }, [loaded]);
+  }, [loaded, persist]);
 
   // --- Auto-load the next chapter ---
   const appendNext = useCallback(() => {
@@ -172,6 +240,7 @@ const ReaderPage = () => {
         if (!found) return;
         const index = Number(found.dataset.chapter);
         const ratio = Math.max(0, Math.min(1, (anchor - found.offsetTop) / Math.max(1, found.offsetHeight)));
+        latestPosition.current = { index, ratio };
         setCurrent((prev) => (prev.index !== index || Math.abs(prev.ratio - ratio) > 0.005 ? { index, ratio } : prev));
         clearTimeout(saveTimer.current);
         saveTimer.current = setTimeout(() => persist(index, ratio), 1200);
@@ -179,7 +248,10 @@ const ReaderPage = () => {
     };
     onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
-    const flush = () => document.visibilityState === "hidden" && persist(current.index, current.ratio);
+    const flush = () => {
+      const position = latestPosition.current;
+      if (document.visibilityState === "hidden" && position?.index != null) persist(position.index, position.ratio);
+    };
     document.addEventListener("visibilitychange", flush);
     return () => {
       window.removeEventListener("scroll", onScroll);
@@ -189,6 +261,56 @@ const ReaderPage = () => {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded.length, persist]);
+
+  // Restoring/laying out a chapter must not publish a new reading position.
+  useEffect(() => {
+    let cancelled = false;
+    const markInteraction = () => {
+      if (!restoring.current) interacted.current = true;
+    };
+    for (const event of ["wheel", "touchstart", "keydown", "pointerdown"])
+      window.addEventListener(event, markInteraction, { passive: true });
+    const checkRemote = async () => {
+      if (document.visibilityState === "hidden" || !digest.current || !serverStored.current) return;
+      await saveQueue.current;
+      const remote = await fetchProgress(bookId).catch(() => null);
+      if (!cancelled && remote && remote.revision !== revision.current) {
+        syncBlocked.current = true;
+        saveGeneration.current++;
+        clearTimeout(saveTimer.current);
+        setRemoteProgress(remote);
+      }
+    };
+    window.addEventListener("focus", checkRemote);
+    document.addEventListener("visibilitychange", checkRemote);
+    return () => {
+      cancelled = true;
+      for (const event of ["wheel", "touchstart", "keydown", "pointerdown"])
+        window.removeEventListener(event, markInteraction);
+      window.removeEventListener("focus", checkRemote);
+      document.removeEventListener("visibilitychange", checkRemote);
+    };
+  }, [bookId]);
+
+  const continueRemote = async () => {
+    try {
+      const fetched = await fetchProgress(bookId);
+      const remote = matchingFB2Progress(fetched, digest.current) ?? { revision: fetched.revision };
+      const index = Math.max(0, Math.min(remote.chapter ?? 0, total - 1));
+      restoring.current = true;
+      interacted.current = false;
+      clearTimeout(saveTimer.current);
+      const chapter = await fetchChapter(bookId, index);
+      revision.current = remote.revision;
+      restoreTo.current = { index, ratio: remote.position ?? 0, locator: remote.locator };
+      setLoaded([chapter]);
+      setCurrent({ index, ratio: remote.position ?? 0 });
+      syncBlocked.current = false;
+      setRemoteProgress(null);
+    } catch {
+      restoring.current = false;
+    }
+  };
 
   // --- Navigate to a chapter (TOC, keyboard) ---
   const goTo = useCallback(
@@ -203,10 +325,11 @@ const ReaderPage = () => {
       }
       fetchChapter(bookId, n)
         .then((ch) => {
-          restoreTo.current = { index: n, ratio: 0 };
+          clearTimeout(saveTimer.current);
+          restoreTo.current = { index: n, ratio: 0, save: true };
           setLoaded([ch]);
           setCurrent({ index: n, ratio: 0 });
-          persist(n, 0);
+          interacted.current = true;
         })
         .catch(() => {});
     },
@@ -441,13 +564,35 @@ const ReaderPage = () => {
           </button>
         )}
 
+        {remoteProgress && (
+          <aside role="status" className="reader__sync-notice">
+            <p>{t("reader.syncChanged")}</p>
+            <button onClick={continueRemote}>{t("reader.syncContinue")}</button>
+            <button
+              onClick={() => {
+                revision.current = remoteProgress.revision;
+                syncBlocked.current = false;
+                setRemoteProgress(null);
+                interacted.current = true;
+                const pos = latestPosition.current;
+                if (pos?.index != null) persist(pos.index, pos.ratio);
+              }}
+            >
+              {t("reader.syncKeep")}
+            </button>
+          </aside>
+        )}
         {loaded.map((ch) => (
           <section key={ch.index} data-chapter={ch.index} className="reader__chapter">
             <header className="reader__chapter-head">
               <p className="reader__eyebrow">
                 {total > 1 ? t("reader.chapterOf", { n: ch.index + 1, total }) : meta?.authors}
               </p>
-              <h1 className="reader__chapter-title">{chapterLabel(meta, ch.index)}</h1>
+              {ch.titleHtml ? (
+                <h1 className="reader__chapter-title" dangerouslySetInnerHTML={{ __html: ch.titleHtml }} />
+              ) : (
+                <h1 className="reader__chapter-title">{chapterLabel(meta, ch.index)}</h1>
+              )}
             </header>
             <article
               className="reader__content"

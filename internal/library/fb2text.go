@@ -16,25 +16,36 @@ import (
 
 // FB2Text is the book's full text split into chapters, plus footnotes.
 type FB2Text struct {
-	Chapters []FB2Chapter
-	Notes    map[string]string // footnote id -> HTML
+	Chapters   []FB2Chapter
+	Notes      map[string]string // footnote id -> HTML
+	Anchors    []FB2Anchor       // FB2 only; source text positions in reading order
+	TextLength int
+	Digest     string // partial-MD5 of the original FB2, filled by the server
 }
 
 type FB2Chapter struct {
-	Title string
-	HTML  string
+	Title     string
+	HTML      string
+	TitleHTML string
 }
 
 // ParseFB2Text converts the FB2 body to HTML. Chapters are the top-level
 // sections of the first <body>; <body name="notes"> goes into the footnotes map.
 // imgURL builds an image URL from a <binary> id.
 func ParseFB2Text(r io.Reader, imgURL func(id string) string) (*FB2Text, error) {
-	dec := xml.NewDecoder(r)
-	dec.CharsetReader = charset.NewReaderLabel
+	input, err := newFB2Input(r)
+	if err != nil {
+		return nil, fmt.Errorf("fb2 encoding: %w", err)
+	}
+	dec := xml.NewDecoder(input)
+	// newFB2Input already converted the declared encoding to UTF-8.
+	dec.CharsetReader = func(_ string, r io.Reader) (io.Reader, error) { return r, nil }
 	dec.Strict = false
-
-	c := &fb2Converter{imgURL: imgURL}
+	source := &fb2Tokens{dec: dec, input: input}
+	dec = xml.NewTokenDecoder(source)
+	c := &fb2Converter{imgURL: imgURL, source: source}
 	res := &FB2Text{Notes: map[string]string{}}
+	defer res.indexFB2Anchors()
 	mainDone := false
 
 	for {
@@ -74,7 +85,10 @@ func ParseFB2Text(r io.Reader, imgURL func(id string) string) (*FB2Text, error) 
 }
 
 type fb2Converter struct {
-	imgURL func(string) string
+	imgURL           func(string) string
+	source           *fb2Tokens
+	titleHTML        string
+	sectionTitleHTML string
 }
 
 func attrValue(e xml.StartElement, name string) string {
@@ -110,7 +124,7 @@ func (c *fb2Converter) parseMainBody(dec *xml.Decoder, res *FB2Text) error {
 					// A "part" with chapters: its intro becomes a separate page,
 					// each chapter becomes a table-of-contents entry.
 					if title != "" || strings.TrimSpace(own) != "" {
-						res.Chapters = append(res.Chapters, FB2Chapter{Title: title, HTML: own})
+						res.Chapters = append(res.Chapters, FB2Chapter{Title: title, HTML: own, TitleHTML: c.sectionTitleHTML})
 					}
 					res.Chapters = append(res.Chapters, subs...)
 					continue
@@ -120,15 +134,16 @@ func (c *fb2Converter) parseMainBody(dec *xml.Decoder, res *FB2Text) error {
 				sb.WriteString(own)
 				for _, sub := range subs {
 					if sub.Title != "" {
-						sb.WriteString("<h3>" + escape(sub.Title) + "</h3>")
+						sb.WriteString("<h3>" + sub.TitleHTML + "</h3>")
 					}
 					sb.WriteString(sub.HTML)
 				}
 				if html := sb.String(); strings.TrimSpace(html) != "" || title != "" {
-					res.Chapters = append(res.Chapters, FB2Chapter{Title: title, HTML: html})
+					res.Chapters = append(res.Chapters, FB2Chapter{Title: title, HTML: html, TitleHTML: c.sectionTitleHTML})
 				}
 			case "title":
-				// The whole-book title inside the body — skip it, it is already on the card.
+				// Keep legacy chapter numbering: the whole-book title is not
+				// rendered as a new preface chapter.
 				if err := dec.Skip(); err != nil {
 					return err
 				}
@@ -152,6 +167,7 @@ func (c *fb2Converter) parseMainBody(dec *xml.Decoder, res *FB2Text) error {
 // content and its first-level nested sections separately.
 func (c *fb2Converter) convertSectionSplit(dec *xml.Decoder) (string, string, []FB2Chapter, error) {
 	var title string
+	var titleHTML string
 	var own strings.Builder
 	var subs []FB2Chapter
 	for {
@@ -169,15 +185,16 @@ func (c *fb2Converter) convertSectionSplit(dec *xml.Decoder) (string, string, []
 				}
 				if title == "" {
 					title = text
+					titleHTML = c.titleHTML
 				} else {
-					own.WriteString("<h3>" + escape(text) + "</h3>")
+					own.WriteString("<h3>" + c.titleHTML + "</h3>")
 				}
 			case "section":
 				subTitle, subHTML, err := c.convertSection(dec)
 				if err != nil {
 					return "", "", nil, err
 				}
-				subs = append(subs, FB2Chapter{Title: subTitle, HTML: subHTML})
+				subs = append(subs, FB2Chapter{Title: subTitle, HTML: subHTML, TitleHTML: c.sectionTitleHTML})
 			default:
 				if err := c.convertElement(dec, t, &own); err != nil {
 					return "", "", nil, err
@@ -185,6 +202,7 @@ func (c *fb2Converter) convertSectionSplit(dec *xml.Decoder) (string, string, []
 			}
 		case xml.EndElement:
 			if t.Name.Local == "section" {
+				c.sectionTitleHTML = titleHTML
 				return title, own.String(), subs, nil
 			}
 		}
@@ -224,6 +242,7 @@ func (c *fb2Converter) parseNotesBody(dec *xml.Decoder, res *FB2Text) error {
 // and the content HTML. Nested sections are merged in with subheadings.
 func (c *fb2Converter) convertSection(dec *xml.Decoder) (string, string, error) {
 	var title string
+	var titleHTML string
 	var sb strings.Builder
 	for {
 		tok, err := dec.Token()
@@ -240,8 +259,9 @@ func (c *fb2Converter) convertSection(dec *xml.Decoder) (string, string, error) 
 				}
 				if title == "" {
 					title = text
+					titleHTML = c.titleHTML
 				} else {
-					sb.WriteString("<h3>" + escape(text) + "</h3>")
+					sb.WriteString("<h3>" + c.titleHTML + "</h3>")
 				}
 			case "section":
 				subTitle, subHTML, err := c.convertSection(dec)
@@ -249,7 +269,7 @@ func (c *fb2Converter) convertSection(dec *xml.Decoder) (string, string, error) 
 					return "", "", err
 				}
 				if subTitle != "" {
-					sb.WriteString("<h3>" + escape(subTitle) + "</h3>")
+					sb.WriteString("<h3>" + c.sectionTitleHTML + "</h3>")
 				}
 				sb.WriteString(subHTML)
 			default:
@@ -259,6 +279,7 @@ func (c *fb2Converter) convertSection(dec *xml.Decoder) (string, string, error) 
 			}
 		case xml.EndElement:
 			if t.Name.Local == "section" {
+				c.sectionTitleHTML = titleHTML
 				return title, sb.String(), nil
 			}
 		}
@@ -268,6 +289,7 @@ func (c *fb2Converter) convertSection(dec *xml.Decoder) (string, string, error) 
 // collectTitle gathers the title text (lines joined with a separator).
 func (c *fb2Converter) collectTitle(dec *xml.Decoder) (string, error) {
 	var parts []string
+	var markup strings.Builder
 	depth := 1
 	for depth > 0 {
 		tok, err := dec.Token()
@@ -282,9 +304,18 @@ func (c *fb2Converter) collectTitle(dec *xml.Decoder) (string, error) {
 		case xml.CharData:
 			if s := strings.TrimSpace(string(t)); s != "" {
 				parts = append(parts, s)
+				if markup.Len() > 0 {
+					markup.WriteByte(' ')
+				}
+				if c.source.path != "" {
+					fmt.Fprintf(&markup, `<span data-fb2-path="%s">%s</span>`, html.EscapeString(c.source.path), escape(string(t)))
+				} else {
+					markup.WriteString(escape(string(t)))
+				}
 			}
 		}
 	}
+	c.titleHTML = markup.String()
 	return strings.Join(parts, ". "), nil
 }
 
@@ -333,19 +364,19 @@ func (c *fb2Converter) convertElement(dec *xml.Decoder, start xml.StartElement, 
 		href := attrValue(start, "href")
 		noteID := strings.TrimPrefix(href, "#")
 		isNote := attrValue(start, "type") == "note" || (strings.HasPrefix(href, "#") && noteID != "")
-		text, err := c.collectTitle(dec) // flat link text
+		_, err := c.collectTitle(dec) // sanitized link text
 		if err != nil {
 			return err
 		}
 		switch {
 		case isNote:
 			fmt.Fprintf(sb, `<sup class="fb2-note-ref"><a data-note="%s">%s</a></sup>`,
-				html.EscapeString(noteID), escape(text))
+				html.EscapeString(noteID), c.titleHTML)
 		case strings.HasPrefix(href, "http"):
 			fmt.Fprintf(sb, `<a href="%s" target="_blank" rel="noopener">%s</a>`,
-				html.EscapeString(href), escape(text))
+				html.EscapeString(href), c.titleHTML)
 		default:
-			sb.WriteString(escape(text))
+			sb.WriteString(c.titleHTML)
 		}
 		return nil
 
@@ -358,11 +389,11 @@ func (c *fb2Converter) convertElement(dec *xml.Decoder, start xml.StartElement, 
 		return nil
 
 	case "title": // title inside poem/epigraph
-		text, err := c.collectTitle(dec)
+		_, err := c.collectTitle(dec)
 		if err != nil {
 			return err
 		}
-		sb.WriteString("<h4>" + escape(text) + "</h4>")
+		sb.WriteString("<h4>" + c.titleHTML + "</h4>")
 		return nil
 	}
 
@@ -401,7 +432,11 @@ func (c *fb2Converter) convertChildren(dec *xml.Decoder, sb *strings.Builder) er
 		case xml.EndElement:
 			return nil
 		case xml.CharData:
-			sb.WriteString(escape(string(t)))
+			if c.source.path != "" && len(t) > 0 && strings.TrimSpace(string(t)) != "" {
+				fmt.Fprintf(sb, `<span data-fb2-path="%s">%s</span>`, html.EscapeString(c.source.path), escape(string(t)))
+			} else {
+				sb.WriteString(escape(string(t)))
+			}
 		}
 	}
 }

@@ -78,7 +78,10 @@ func Open(path string) (*Service, error) {
 		db.Close()
 		return nil, fmt.Errorf("auth schema: %w", err)
 	}
-	migrateProgress(db)
+	if err := migrateProgress(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("auth migration: %w", err)
+	}
 	return &Service{db: db}, nil
 }
 

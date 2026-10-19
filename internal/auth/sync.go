@@ -113,12 +113,12 @@ func (s *Service) ExportState(ctx context.Context, userID int64) (*SyncState, er
 func (s *Service) MergeState(ctx context.Context, userID int64, in *SyncState) error {
 	for _, p := range in.Progress {
 		if _, err := s.db.ExecContext(ctx, `
-			INSERT INTO reading_progress (user_id, book_id, chapter, position, overall, locator, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO reading_progress (user_id, book_id, chapter, position, overall, locator, revision, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, 1, ?)
 			ON CONFLICT (user_id, book_id) DO UPDATE SET
 				chapter = excluded.chapter, position = excluded.position,
 				overall = excluded.overall, locator = excluded.locator,
-				updated_at = excluded.updated_at
+				updated_at = excluded.updated_at, revision = reading_progress.revision+1
 			WHERE excluded.updated_at > reading_progress.updated_at`,
 			userID, p.BookID, p.Chapter, p.Position, p.Overall, p.Locator, p.UpdatedAt); err != nil {
 			return err

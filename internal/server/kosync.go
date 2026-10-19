@@ -143,10 +143,32 @@ func (s *Server) handleKosyncUpdate(w http.ResponseWriter, r *http.Request) {
 		kosyncError(w, http.StatusForbidden, 2003, "Invalid request")
 		return
 	}
-	ts, err := s.users.KosyncUpdate(r.Context(), u.ID, &auth.KosyncProgress{
-		Document: req.Document, Progress: progress, Percentage: *req.Percentage,
-		Device: req.Device, DeviceID: req.DeviceID,
-	})
+	if *req.Percentage < 0 || *req.Percentage > 1 {
+		kosyncError(w, http.StatusForbidden, 2003, "Invalid request")
+		return
+	}
+	ko := &auth.KosyncProgress{Document: req.Document, Progress: progress, Percentage: *req.Percentage, Device: req.Device, DeviceID: req.DeviceID}
+	// Preserve the original device position, while resolving a separate web
+	// locator. Never apply a location to a different FB2 variant's digest.
+	if bookID, err := s.st.BookIDByDigest(r.Context(), req.Document); err == nil && s.lib != nil {
+		if text, err := s.bookText(r, bookID); err == nil && text.Digest == req.Document {
+			if locator, chapter, position, _, ok := text.ResolveFB2Locator(progress); ok {
+				_, err = s.users.SaveBridgedProgress(r.Context(), u.ID, bookID, auth.Progress{Chapter: chapter, Position: position, Overall: *req.Percentage, Locator: storeFB2Position(req.Document, locator)}, nil, ko)
+				if err != nil {
+					s.apiError(w, err)
+					return
+				}
+				saved, err := s.users.KosyncGet(r.Context(), u.ID, req.Document)
+				if err != nil {
+					s.apiError(w, err)
+					return
+				}
+				writeJSON(w, map[string]any{"document": req.Document, "timestamp": saved.Timestamp})
+				return
+			}
+		}
+	}
+	ts, err := s.users.KosyncUpdate(r.Context(), u.ID, ko)
 	if err != nil {
 		s.apiError(w, err)
 		return

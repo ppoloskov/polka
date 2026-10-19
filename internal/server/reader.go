@@ -2,7 +2,9 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -57,7 +59,26 @@ func (s *Server) bookText(r *http.Request, bookID int64) (*library.FB2Text, erro
 	imgURL := func(id string) string {
 		return fmt.Sprintf("/api/v1/read/%d/img/%s", bookID, id)
 	}
-	text, err := s.lib.Text(f.Folder, f.File, f.Ext, imgURL)
+	var text *library.FB2Text
+	if strings.EqualFold(f.Ext, "fb2") {
+		rc, size, openErr := s.lib.Open(f.Folder, f.File, f.Ext)
+		if openErr != nil {
+			return nil, openErr
+		}
+		defer rc.Close()
+		tee := &digestTee{}
+		text, err = library.ParseFB2Text(io.TeeReader(rc, tee), imgURL)
+		if err == nil {
+			// Parsing stops at <binary>; drain the rest for the file identity.
+			_, err = io.Copy(tee, rc)
+			if err == nil && tee.pos == size {
+				text.Digest = tee.digest()
+				err = s.st.SetBookDigest(r.Context(), text.Digest, bookID)
+			}
+		}
+	} else {
+		text, err = s.lib.Text(f.Folder, f.File, f.Ext, imgURL)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -136,6 +157,7 @@ func (s *Server) handleReadMeta(w http.ResponseWriter, r *http.Request) {
 		"authors":  d.AuthorNames,
 		"chapters": chapters,
 		"notes":    text.Notes,
+		"digest":   text.Digest,
 	})
 }
 
@@ -161,10 +183,11 @@ func (s *Server) handleReadChapter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{
-		"index": n,
-		"total": len(text.Chapters),
-		"title": text.Chapters[n].Title,
-		"html":  text.Chapters[n].HTML,
+		"index":     n,
+		"total":     len(text.Chapters),
+		"title":     text.Chapters[n].Title,
+		"titleHtml": text.Chapters[n].TitleHTML,
+		"html":      text.Chapters[n].HTML,
 	})
 }
 
@@ -211,12 +234,16 @@ func (s *Server) handleReadProgress(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost {
 		var p auth.Progress
+		var revision *int64
+		var digest string
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&struct {
 			Chapter  *int     `json:"chapter"`
 			Position *float64 `json:"position"`
 			Overall  *float64 `json:"progress"`
 			Locator  *string  `json:"locator"`
-		}{&p.Chapter, &p.Position, &p.Overall, &p.Locator}); err != nil {
+			Revision **int64  `json:"revision"`
+			Digest   *string  `json:"digest"`
+		}{&p.Chapter, &p.Position, &p.Overall, &p.Locator, &revision, &digest}); err != nil {
 			http.Error(w, "invalid body", http.StatusBadRequest)
 			return
 		}
@@ -224,21 +251,46 @@ func (s *Server) handleReadProgress(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid progress", http.StatusBadRequest)
 			return
 		}
-		if err := s.users.SaveProgress(r.Context(), u.ID, bookID, p); err != nil {
+		var ko *auth.KosyncProgress
+		if p.Locator != "" && strings.HasPrefix(p.Locator, "/FictionBook") && s.lib != nil {
+			text, err := s.bookText(r, bookID)
+			if err != nil {
+				s.apiError(w, err)
+				return
+			}
+			if digest == "" || digest != text.Digest {
+				http.Error(w, "book file changed; reopen the reader", http.StatusPreconditionFailed)
+				return
+			}
+			locator, chapter, position, overall, ok := text.ResolveFB2Locator(p.Locator)
+			if !ok {
+				http.Error(w, "invalid FB2 location", http.StatusBadRequest)
+				return
+			}
+			p.Locator, p.Chapter, p.Position, p.Overall = storeFB2Position(digest, locator), chapter, position, overall
+			ko = &auth.KosyncProgress{Document: digest, Progress: locator, Percentage: overall, Device: "Polka web reader", DeviceID: "polka-web"}
+		}
+		savedRevision, err := s.users.SaveBridgedProgress(r.Context(), u.ID, bookID, p, revision, ko)
+		if errors.Is(err, auth.ErrProgressConflict) {
+			http.Error(w, "reading position changed", http.StatusConflict)
+			return
+		}
+		if err != nil {
 			s.apiError(w, err)
 			return
 		}
-		writeJSON(w, map[string]any{"stored": true})
+		writeJSON(w, map[string]any{"stored": true, "revision": savedRevision})
 		return
 	}
 
 	p, err := s.users.GetProgress(r.Context(), u.ID, bookID)
 	if err != nil {
-		writeJSON(w, map[string]any{"stored": true, "chapter": 0, "position": 0, "progress": 0})
+		writeJSON(w, map[string]any{"stored": true, "chapter": 0, "position": 0, "progress": 0, "revision": 0})
 		return
 	}
+	document, locator := readFB2Position(p.Locator)
 	writeJSON(w, map[string]any{
 		"stored": true, "chapter": p.Chapter, "position": p.Position,
-		"progress": p.Overall, "locator": p.Locator,
+		"progress": p.Overall, "locator": locator, "document": document, "revision": p.Revision,
 	})
 }

@@ -513,3 +513,15 @@
 .reader__article a[data-goto]:hover {
   color: var(--accent-strong, #b8860b);
 }
+
+.reader__sync-notice {
+  position: sticky;
+  top: 4rem;
+  z-index: 10;
+  padding: 1rem;
+  background: var(--surface, #fff8e7);
+  color: var(--text, #242424);
+  border: 1px solid currentColor;
+  border-radius: 0.5rem;
+}
+.reader__sync-notice button { margin: 0.25rem 0.75rem 0.25rem 0; }

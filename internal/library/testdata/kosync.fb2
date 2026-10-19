@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+<description><title-info><book-title>Тест</book-title></title-info></description>
+<body>
+  <title><p>Тест</p></title>
+  <epigraph><p>Эпиграф книги</p><text-author>Автор эпиграфа</text-author></epigraph>
+  <section>
+    <title><p>Глава первая</p></title>
+    <p>Первый абзац с <emphasis>курсивом</emphasis> и сноской<a l:href="#n1" type="note">[1]</a>.</p>
+    <empty-line/>
+    <poem><stanza><v>Строка стиха раз</v><v>Строка стиха два</v></stanza></poem>
+    <image l:href="#pic1.jpg"/>
+    <section>
+      <title><p>Часть 1.1</p></title>
+      <p>Вложенный текст.</p>
+    </section>
+  </section>
+  <section>
+    <title><p>Глава вторая</p></title>
+    <p>Текст второй главы &amp; амперсанд.</p>
+<p>  А😀Б
+	 В&#160;Г</p>
+<p>A &#32;  B &amp; &#x1f600; C</p>
+<p>before<![CDATA[ cdata & text ]]>after</p>
+  </section>
+</body>
+<body name="notes">
+  <section id="n1"><title><p>1</p></title><p>Текст сноски.</p></section>
+</body>
+<binary id="pic1.jpg" content-type="image/jpeg">aGVsbG8=</binary>
+</FictionBook>
