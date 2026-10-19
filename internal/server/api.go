@@ -343,12 +343,6 @@ func (s *Server) handleGetBookForm(w http.ResponseWriter, r *http.Request) {
 			"LastName": a.Last, "FirstName": a.First, "MiddleName": a.Middle,
 		})
 	}
-	seriesList := make([]map[string]any, 0, len(d.Series))
-	for _, sr := range d.Series {
-		seriesList = append(seriesList, map[string]any{
-			"SeriesID": sr.ID, "SeriesTitle": sr.Title, "SeqNumber": sr.SeqNumber,
-		})
-	}
 
 	resp := map[string]any{
 		"bookForm": map[string]any{
@@ -363,7 +357,6 @@ func (s *Server) handleGetBookForm(w http.ResponseWriter, r *http.Request) {
 		},
 		"authors":    authors,
 		"genresList": genreList,
-		"series":     seriesList,
 		"annotation": "",
 	}
 
@@ -387,10 +380,29 @@ func (s *Server) handleGetBookForm(w http.ResponseWriter, r *http.Request) {
 			resp["isbn"] = meta.ISBN
 			// Lazy indexing: the ISBN from the file becomes searchable.
 			s.st.SetBookISBN(r.Context(), d.ID, meta.ISBN)
+			if len(meta.Sequences) > 0 {
+				var refs []store.SeriesRef
+				for _, sequence := range meta.Sequences {
+					refs = append(refs, store.SeriesRef{Title: sequence.Name, SeqNumber: sequence.Number})
+				}
+				if err := s.st.AddBookSeries(r.Context(), d.ID, refs); err != nil {
+					s.log.Warn("book series", "book", d.ID, "error", err)
+				} else if refs, err := s.st.BookSeries(r.Context(), d.ID); err == nil {
+					d.Series = refs
+				}
+			}
 		} else if !errors.Is(err, library.ErrNoFile) {
 			s.log.Warn("fb2 meta", "book", d.ID, "error", err)
 		}
 	}
+	seriesList := make([]map[string]any, 0, len(d.Series))
+	for _, sr := range d.Series {
+		seriesList = append(seriesList, map[string]any{
+			"SeriesID": sr.ID, "SeriesTitle": sr.Title, "SeqNumber": sr.SeqNumber,
+		})
+	}
+
+	resp["series"] = seriesList
 	writeJSON(w, resp)
 }
 
