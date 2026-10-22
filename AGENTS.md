@@ -36,3 +36,8 @@ Catalog libraryId filters must apply before LIMIT/OFFSET, including personal
 shelves and external collection references. Book column additions must stay
 aligned across every scan. Personal metadata lookup may retain missing/disabled
 entries; ordinary catalog queries and file serving must remain availability-gated.
+
+Upload duplicate checks are scoped to the default legacy target; a copy in a
+named library must not block an independent default-library upload. Keep ordinary
+Polka progress per book ID; KOReader digest ambiguity is a documented external
+protocol limit. Leave the old bulk importer as test-fixture support in this series.

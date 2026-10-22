@@ -128,6 +128,26 @@ describe("AdminLibraryPage library management", () => {
     expect(screen.getByText("/data/catalog.inpx")).toBeInTheDocument();
   });
 
+  it("keeps legacy completion visible when older status responses omit libraryId", async () => {
+    importStatus.mockResolvedValue({ running: false, phase: "done", books: 1, authors: 1, series: 0 });
+    renderPage();
+    expect(await screen.findByText(t("admin.import.done", { books: "1", authors: "1", series: "0" }))).toBeInTheDocument();
+  });
+
+  it("does not show a named-library completion in the legacy import section", async () => {
+    const named = { id: "named-1", name: "Named", kind: "folder", root: "/books/named", enabled: true };
+    fetchAdminLibraries.mockResolvedValue({ libraries: [legacy, named] });
+    importStatus
+      .mockResolvedValueOnce({ running: false, phase: "idle" })
+      .mockResolvedValue({ running: false, phase: "done", libraryId: "named-1", books: 1, authors: 1, series: 0, added: 1, removed: 0, changed: 0, unchanged: 0 });
+    renderPage();
+    await screen.findByLabelText(t("admin.libraries.renameLabel", { name: "Named" }));
+
+    fireEvent.click(screen.getAllByRole("button", { name: t("admin.libraries.update") })[1]);
+    expect(await screen.findByText(t("admin.libraries.diff", { added: 1, removed: 0, changed: 0, unchanged: 0 }))).toBeInTheDocument();
+    expect(screen.queryByText(t("admin.import.done", { books: "1", authors: "1", series: "0" }))).toBeNull();
+  });
+
   it("refreshes the legacy source when the first status poll sees a fast completed import", async () => {
     fetchAdminLibraries
       .mockResolvedValueOnce({ libraries: [{ ...legacy, sourcePath: "" }] })

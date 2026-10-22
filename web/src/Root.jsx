@@ -12,7 +12,7 @@ import AdminLibraryPage from "./pages/AdminLibraryPage";
 import ReaderPage from "./pages/ReaderPage";
 import ListsPage from "./pages/ListsPage";
 import SyncPage from "./pages/SyncPage";
-import { fetchConfig } from "./api/fetchBooks";
+import { fetchConfig, fetchLibraries } from "./api/fetchBooks";
 import { fetchMe, logout } from "./api/auth";
 import "./theme.css";
 import "./Root.css";
@@ -25,6 +25,8 @@ const Root = () => {
   const [sync, setSync] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [version, setVersion] = useState("");
+  const [libraries, setLibraries] = useState([]);
+  const [selectedLibraryId, setSelectedLibraryId] = useState("");
 
   const loadConfig = useCallback(() => {
     fetchConfig()
@@ -53,6 +55,19 @@ const Root = () => {
     if (!authRequired || user) loadConfig();
   }, [authChecked, authRequired, user, loadConfig]);
 
+  const refreshLibraries = useCallback(() => {
+    fetchLibraries()
+      .then((res) => {
+        const available = res?.libraries ?? [];
+        setLibraries(available);
+        setSelectedLibraryId((id) => available.length > 1 && available.some((item) => item.id === id) ? id : "");
+      })
+      .catch(() => {
+        setLibraries([]);
+        setSelectedLibraryId("");
+      });
+  }, []);
+
   const handleLogout = () => {
     logout().finally(() => {
       setUser(null);
@@ -74,6 +89,10 @@ const Root = () => {
         user={user}
         desktop={isDesktop}
         sync={sync}
+        libraries={libraries}
+        selectedLibraryId={selectedLibraryId}
+        onLibraryChange={setSelectedLibraryId}
+        refreshLibraries={refreshLibraries}
         onLogout={isDesktop ? undefined : handleLogout}
       />
       <main className="root-main">{children}</main>
@@ -89,16 +108,16 @@ const Root = () => {
   return (
     <HashRouter>
       <Routes>
-        <Route path="/" element={layout(<HomePage config={config} />)} />
-        <Route path="/search" element={layout(<SearchPage config={config} />)} />
+        <Route path="/" element={layout(<HomePage config={config} selectedLibraryId={selectedLibraryId} />)} />
+        <Route path="/search" element={layout(<SearchPage config={config} selectedLibraryId={selectedLibraryId} />)} />
         <Route path="/lists" element={user ? layout(<ListsPage />) : <Navigate to="/" replace />} />
-        <Route path="/book/:bookId" element={layout(<BookPage user={user} sync={sync} />)} />
+        <Route path="/book/:bookId" element={layout(<BookPage user={user} sync={sync} selectedLibraryId={selectedLibraryId} />)} />
         {(sync || isDesktop) && <Route path="/sync" element={layout(<SyncPage />)} />}
         {/* Читалка — без общей шапки, у неё свой минимальный интерфейс */}
         <Route path="/read/:bookId" element={<ReaderPage />} />
-        <Route path="/author/:authorId" element={layout(<BookListPage kind="author" />)} />
-        <Route path="/series/:seriesId" element={layout(<BookListPage kind="series" />)} />
-        <Route path="/shelf/:shelfId" element={layout(<BookListPage kind="shelf" />)} />
+        <Route path="/author/:authorId" element={layout(<BookListPage key={selectedLibraryId} kind="author" selectedLibraryId={selectedLibraryId} />)} />
+        <Route path="/series/:seriesId" element={layout(<BookListPage key={selectedLibraryId} kind="series" selectedLibraryId={selectedLibraryId} />)} />
+        <Route path="/shelf/:shelfId" element={layout(<BookListPage key={selectedLibraryId} kind="shelf" selectedLibraryId={selectedLibraryId} />)} />
         <Route
           path="/admin/users"
           element={

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import "./TopBar.css";
 
-const TopBar = ({ user, onLogout, desktop = false, sync = null }) => {
+const TopBar = ({ user, onLogout, desktop = false, sync = null, libraries = [], selectedLibraryId = "", onLibraryChange, refreshLibraries }) => {
   const [kosyncOpen, setKosyncOpen] = useState(false);
   // Narrow screens collapse the search into an icon; tapping it expands
   // the field over the top bar.
@@ -28,6 +28,12 @@ const TopBar = ({ user, onLogout, desktop = false, sync = null }) => {
   const [searchParams] = useSearchParams();
 
   const [query, setQuery] = useState(searchParams.get("q") ?? "");
+  const showLibrarySelector = ["/", "/search"].includes(location.pathname) ||
+    /^\/(author|series|shelf)\//.test(location.pathname);
+
+  useEffect(() => {
+    if (showLibrarySelector) refreshLibraries?.();
+  }, [location.pathname, refreshLibraries, showLibrarySelector]);
 
   useEffect(() => {
     setQuery(searchParams.get("q") ?? "");
@@ -73,6 +79,21 @@ const TopBar = ({ user, onLogout, desktop = false, sync = null }) => {
               {t("nav.server")}
               {sync && !sync.online && <span className="topbar__offline-dot" title={t("nav.serverDown")} />}
             </Link>
+          )}
+          {showLibrarySelector && libraries.length > 1 && (
+            <label className="topbar__library">
+              <span>{t("library.selector")}</span>
+              <select
+                aria-label={t("library.selector")}
+                value={selectedLibraryId}
+                onChange={(event) => onLibraryChange?.(event.target.value)}
+              >
+                <option value="">{t("library.combined")}</option>
+                {libraries.map((library) => (
+                  <option key={library.id} value={library.id}>{library.name}</option>
+                ))}
+              </select>
+            </label>
           )}
           {user?.role === "admin" && (
             <>

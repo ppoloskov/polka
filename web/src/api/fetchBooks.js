@@ -14,34 +14,36 @@ const get = (endpoint, params = {}) => api.getJson(`main/getBooks/${endpoint}${b
 
 export const fetchConfig = () => get("getConfig");
 
-export const fetchHomeShelves = ({ limit } = {}) => get("getHomeShelves", { limit });
+export const fetchLibraries = () => api.getJson("api/v1/libraries");
 
-export const fetchCatalogShelves = ({ limit, count } = {}) =>
-  get("getCatalogShelves", { limit, count });
+export const fetchHomeShelves = ({ limit, libraryId } = {}) => get("getHomeShelves", { limit, libraryId });
 
-export const fetchShelfBooks = ({ shelfId, limit, offset } = {}) =>
-  get("getShelfBooks", { shelfId, limit, offset });
+export const fetchCatalogShelves = ({ limit, count, libraryId } = {}) =>
+  get("getCatalogShelves", { limit, count, libraryId });
 
-export const fetchSearchStats = ({ search, selectedGroupID } = {}) => get("getSearchStats", { search, selectedGroupID });
+export const fetchShelfBooks = ({ shelfId, limit, offset, libraryId } = {}) =>
+  get("getShelfBooks", { shelfId, limit, offset, libraryId });
 
-export const fetchSearchTitles = ({ search, selectedGroupID } = {}) => get("getSearchTitles", { search, selectedGroupID });
+export const fetchSearchStats = ({ search, selectedGroupID, libraryId } = {}) => get("getSearchStats", { search, selectedGroupID, libraryId });
 
-export const fetchSearchAuthors = ({ search, selectedGroupID } = {}) => get("getSearchAuthors", { search, selectedGroupID });
+export const fetchSearchTitles = ({ search, selectedGroupID, libraryId } = {}) => get("getSearchTitles", { search, selectedGroupID, libraryId });
 
-export const fetchSearchSeries = ({ search, selectedGroupID } = {}) => get("getSearchSeries", { search, selectedGroupID });
+export const fetchSearchAuthors = ({ search, selectedGroupID, libraryId } = {}) => get("getSearchAuthors", { search, selectedGroupID, libraryId });
 
-export const fetchSearchGenres = ({ search } = {}) => get("getSearchGenres", { search });
+export const fetchSearchSeries = ({ search, selectedGroupID, libraryId } = {}) => get("getSearchSeries", { search, selectedGroupID, libraryId });
 
-export const fetchAuthorBooks = ({ selectedItemID, selectedGroupID } = {}) =>
-  get("getSearchAuthorBooks", { selectedItemID, selectedGroupID });
+export const fetchSearchGenres = ({ search, libraryId } = {}) => get("getSearchGenres", { search, libraryId });
 
-export const fetchSeriesBooks = ({ selectedItemID, selectedGroupID } = {}) =>
-  get("getSearchSeriesBooks", { selectedItemID, selectedGroupID });
+export const fetchAuthorBooks = ({ selectedItemID, selectedGroupID, libraryId } = {}) =>
+  get("getSearchAuthorBooks", { selectedItemID, selectedGroupID, libraryId });
+
+export const fetchSeriesBooks = ({ selectedItemID, selectedGroupID, libraryId } = {}) =>
+  get("getSearchSeriesBooks", { selectedItemID, selectedGroupID, libraryId });
 
 export const fetchBookForm = ({ selectedItemID } = {}) => get("getBookForm", { selectedItemID });
 
 export const fetchExternalEnrichment = ({ bookId, title, author, isbn } = {}) =>
   get("getExternalEnrichment", { bookId, title, author, isbn });
 
-export const fetchSimilarBooks = ({ bookId, title, author } = {}) =>
-  get("getSimilarBooks", { bookId, title, author });
+export const fetchSimilarBooks = ({ bookId, title, author, libraryId } = {}) =>
+  get("getSimilarBooks", { bookId, title, author, libraryId });

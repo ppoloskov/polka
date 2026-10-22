@@ -76,6 +76,15 @@
   line-height: 1.1;
 }
 
+.book-page__library {
+  align-self: flex-start;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--bg-muted);
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
 .book-page__authors {
   font-size: 18px;
   color: var(--fg-muted);
