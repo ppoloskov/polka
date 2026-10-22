@@ -42,7 +42,7 @@ func seriesTitles(refs []SeriesRef) string {
 }
 
 func (s *Store) BookSeries(ctx context.Context, bookID int64) ([]SeriesRef, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.readDB.QueryContext(ctx, `
 		SELECT s.id, s.title, bs.series_num
 		FROM book_series bs JOIN series s ON s.id = bs.series_id
 		WHERE bs.book_id = ? ORDER BY bs.position, s.id`, bookID)

@@ -44,3 +44,9 @@ Upload duplicate checks are scoped to the default legacy target; a copy in a
 named library must not block an independent default-library upload. Keep ordinary
 Polka progress per book ID; KOReader digest ambiguity is a documented external
 protocol limit. Leave the old bulk importer as test-fixture support in this series.
+
+Keep catalog reads on `Store.readDB` and writes on the single-connection
+`Store.db` pool. WAL readers must see the previous commit during publication.
+Bulk publication reuses ImportSession statements/caches inside its existing
+transaction; never commit batches or drop global indexes there. Preserve
+unchanged search rows and commit the ID allocation floor with the catalog.

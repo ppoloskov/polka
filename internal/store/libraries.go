@@ -21,7 +21,7 @@ type Library struct {
 }
 
 func (s *Store) ListLibraries(ctx context.Context) ([]Library, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.readDB.QueryContext(ctx, `
 		SELECT id, name, kind, root, source_path, enabled FROM libraries
 		ORDER BY CASE WHEN id = 'legacy' THEN 0 ELSE 1 END, name, id`)
 	if err != nil {
@@ -45,7 +45,7 @@ func (s *Store) ListLibraries(ctx context.Context) ([]Library, error) {
 func (s *Store) Library(ctx context.Context, id string) (*Library, error) {
 	var l Library
 	var enabled int
-	err := s.db.QueryRowContext(ctx,
+	err := s.readDB.QueryRowContext(ctx,
 		`SELECT id, name, kind, root, source_path, enabled FROM libraries WHERE id = ?`, id).
 		Scan(&l.ID, &l.Name, &l.Kind, &l.Root, &l.SourcePath, &enabled)
 	if err == sql.ErrNoRows {
