@@ -18,6 +18,7 @@ checkout work; implementation lives in the attached multiple-libraries worktree.
 | Catalog scope | Filter before pagination; source fields; personal retention | PR #10, `9ed3655`; full Go checks in pr10 |
 | Admin UI | Existing screen controls both sources and manual updates | PR #11, `eca0ab3`; 41 web tests/build and both binaries in pr11 |
 | Minimal completion | Reader selector/badges/unavailable cards; shared metadata parser | PR #12, `a6d31b6`; exact-head Go/web checks, native upgrade and HTTP acceptance |
+| Publication reads/perf | WAL reader, bulk publish, scoped FTS indexing, cover ETags | PR #14, `ed473ff`; full Go checks and 60 web tests |
 
 Full Go checks mean `go test ./...`, `go vet ./...`, server and desktop builds
 from each exact committed archive. Frontend checks use the unchanged lockfile;

@@ -2,13 +2,17 @@
 
 ## Current work
 
-Follow-up regression: refreshing during publication returned 504 because the
-only catalog connection was held by the writer. A dedicated WAL reader keeps
-the previous catalog available; named update progress survives failed list
-loads. Publication also used the single-book upload path and rebuilt unchanged
-FTS rows. The fix reuses existing bulk insert statements/caches in the same
-transaction and indexes only new/restored entries. Validation and publication
-are in progress; do not interrupt the live server to apply it.
+Follow-up regression, fixed: refreshing during publication returned 504
+because the only catalog connection was held by the writer. A dedicated WAL
+reader keeps the previous catalog available; named update progress survives
+failed list loads. Publication reuses existing bulk insert statements/caches
+in the same transaction and indexes only new/restored entries. Delivered in
+PR #14 (`bf47588`) together with search/cover performance fixes (`ed473ff`):
+no duplicated ranked-search filtering, the library/source index lives in the
+v6 schema, ANALYZE follows each publish, and covers revalidate by ETag
+(book ID + per-library generation). The published cleanup image
+`multiple-libraries-945f187` predates these fixes; do not rely on it for
+update-heavy use. The live deployment is digest-pinned and untouched.
 
 Persistent manual INPX/folder libraries, implemented by Luna agents as a stacked
 PR series in the attached multiple-libraries worktree. The primary checkout has
