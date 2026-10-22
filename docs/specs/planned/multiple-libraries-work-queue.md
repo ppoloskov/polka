@@ -9,13 +9,13 @@ architect reviews scope/style/behavior before Git publication.
 
 | Package | Behavior and scope | Dependencies | Required validation | Status |
 | --- | --- | --- | --- | --- |
-| WP1 | Automatic additive default-library migration, registry, durable allocator shared by existing insert paths, reserve known auth refs before startup/import; newer-schema rejection. No source scans or changed public routes. | None | v5/v1/fresh/reopen, row/relation/deletion preservation, Clear/reopen/import/upload allocation | Exact commit validated; publishing |
-| WP2 | Resolve each book's owning root across all serving paths while preserving dynamic legacy root and uploads | WP1 | same config/root changes, two roots with same locator, reader/download/cover/export/email, existing suites | Reviewed; HTTP/server/library tests pass; exact-commit verification next |
-| WP3 | Disk-backed snapshot staging and atomic target-only publication; missing separate from admin deleted; preserve personal state and other libraries | WP1 | diff/idempotence/remove/reappear/admin hidden, rollback/error/cancel/restart, no global search/index clearing | Reviewed; focused tests/vet pass; exact-commit validation next |
-| WP3b | Availability filtering before exposing update entrypoints; missing/disabled excluded from normal counts, browsing, files and cached chapters | WP2, WP3 | missing/disabled counts/search/author/series/file/recommendations, reader-cache removal and restore | Exact commit validated; publishing next |
-| WP4a | Strict complete INPX staging and exact immutable record keys | WP3 | owned-copy stability, same/changed/source-deleted records, malformed/duplicate/corrupt input | Reviewed; tests/vet and 20k scale probe pass; exact commit next |
-| WP4b | Saved-source updater and legacy CLI/web import adapters over same engine | WP3b, WP4a | path/upload/default target, failed replace preserves data, empty guard, unchanged old contracts | Test writing |
-| WP5 | Recursive folder adapter, full-byte hashes, existing metadata parsers/fallback | WP2, WP3 | recursive add/change/remove, duplicate copies, symlinks/traversal/unreadable/unstable inputs, realistic source tree | Reviewed; focused tests/vet pass; committing independently before legacy adapters |
+| WP1 | Automatic additive default-library migration, registry, durable allocator shared by existing insert paths, reserve known auth refs before startup/import; newer-schema rejection. No source scans or changed public routes. | None | v5/v1/fresh/reopen, row/relation/deletion preservation, Clear/reopen/import/upload allocation | Published PR #1 |
+| WP2 | Resolve each book's owning root across all serving paths while preserving dynamic legacy root and uploads | WP1 | same config/root changes, two roots with same locator, reader/download/cover/export/email, existing suites | Published PR #2 |
+| WP3 | Disk-backed snapshot staging and atomic target-only publication; missing separate from admin deleted; preserve personal state and other libraries | WP1 | diff/idempotence/remove/reappear/admin hidden, rollback/error/cancel/restart, no global search/index clearing | Published PR #3 |
+| WP3b | Availability filtering before exposing update entrypoints; missing/disabled excluded from normal counts, browsing, files and cached chapters | WP2, WP3 | missing/disabled counts/search/author/series/file/recommendations, reader-cache removal and restore | Published PR #4 |
+| WP4a | Strict complete INPX staging and exact immutable record keys | WP3 | owned-copy stability, same/changed/source-deleted records, malformed/duplicate/corrupt input | Published PR #5 |
+| WP4b | Saved-source updater and legacy CLI/web import adapters over same engine | WP3b, WP4a | path/upload/default target, failed replace preserves data, empty guard, unchanged old contracts | Reviewed; commit and exact upgrade validation next |
+| WP5 | Recursive folder adapter, full-byte hashes, existing metadata parsers/fallback | WP2, WP3 | recursive add/change/remove, duplicate copies, symlinks/traversal/unreadable/unstable inputs, realistic source tree | Exact commit validated; PR #6 publication underway |
 | WP6 | Admin libraries UI/API/CLI, combined browsing/filter/source badges and unavailable personal entries | WP4, WP5 | admin authorization/demo/connected proxy, counts/pagination/filter/bulk, existing UI tests/build and real HTTP workflows | Pending |
 | WP7 | Upgrade/restart and end-to-end acceptance, final compatibility cleanup/docs | All | previous-version data and unchanged config/clients; both source types; source failure; repeated updates; full Go/Node/build/vet; actual container proof where available | Pending |
 
@@ -82,8 +82,7 @@ resolution. Existing server/library suites pass. Review preserved export's
 skip-missing behavior, unset legacy-root progress saves, and original field
 formatting. No query positional scan or reader protocol changed.
 
-Status: implementation authorized; WP1 publishing, WP2 reviewed, WP3 implementing.
-Next: exact-commit WP2 validation/publication, then snapshot availability work.
+Historical execution notes follow; the work-package table records current status.
 
 Published: [foundation PR #1](https://github.com/ppoloskov/polka/pull/1), then
 [roots PR #2](https://github.com/ppoloskov/polka/pull/2) stacked on #1. Both exact
@@ -124,3 +123,12 @@ the source changes separate. Folder hashing and metadata use one confined
 recursion, source-byte preservation, symlink/unsupported skips, full hashes,
 metadata/fallback, changed/moved/identical copies, added dates and extension case.
 No public folder management is claimed until the API/UI packages land.
+
+Folder exact `4581178` passed full Go tests/vet/server and desktop builds from
+`/private/tmp/polka-validation/pr6`. Legacy adapters are reviewed: CLI replacement
+no longer deletes the database, web and CLI share atomic publication, uploaded
+indexes are retained by verified hash, provenance commits with the snapshot, and
+cover caches revalidate. Unknown legacy catalog rows become unavailable only on
+explicit successful replacement; hashed uploads remain. Failed replacement and
+source/provenance rollback tests pass. Exact commit and native upgrade checks
+remain required before publication. Management API work is separate.

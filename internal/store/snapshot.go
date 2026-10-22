@@ -16,13 +16,27 @@ import (
 // Snapshot stages source records in a temporary SQLite database so an update
 // does not need to keep the complete catalog in memory.
 type Snapshot struct {
-	db     *sql.DB
-	tx     *sql.Tx
-	insert *sql.Stmt
-	dir    string
-	poison error
-	sealed bool
-	closed bool
+	db                       *sql.DB
+	tx                       *sql.Tx
+	insert                   *sql.Stmt
+	dir                      string
+	poison                   error
+	sealed                   bool
+	closed                   bool
+	inpxName                 string
+	inpxHash                 string
+	collection               string
+	sourcePath               string
+	markLegacyUnkeyedMissing bool
+}
+
+// SetInpxSource records provenance to commit with an INPX snapshot. When
+// markLegacyUnkeyedMissing is true, identity-unknown legacy catalog rows are
+// retained as unavailable; hashed web uploads are left alone.
+func (s *Snapshot) SetInpxSource(name, hash, collection, sourcePath string, markLegacyUnkeyedMissing bool) {
+	s.inpxName, s.inpxHash = name, hash
+	s.collection, s.sourcePath = collection, sourcePath
+	s.markLegacyUnkeyedMissing = markLegacyUnkeyedMissing
 }
 
 // UpdateStats counts new keys, newly absent keys, availability transitions,
@@ -32,6 +46,13 @@ type UpdateStats struct {
 	Removed   int
 	Changed   int
 	Unchanged int
+}
+
+// LibraryBookCount counts visible catalog rows belonging to one library.
+func (s *Store) LibraryBookCount(ctx context.Context, libraryID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM books WHERE library_id=? AND deleted=0 AND missing=0`, libraryID).Scan(&n)
+	return n, err
 }
 
 // NewSnapshot creates a temporary SQLite-backed staging area under dir. An
@@ -263,6 +284,42 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE books SET missing=1 WHERE library_id=? AND missing=2`, libraryID); err != nil {
 		return stats, err
+	}
+	if libraryID == "legacy" && snapshot.markLegacyUnkeyedMissing {
+		res, err := tx.ExecContext(ctx, `UPDATE books SET missing=1 WHERE library_id='legacy' AND source_key='' AND file_hash='' AND missing=0`)
+		if err != nil {
+			return stats, err
+		}
+		removed, err := res.RowsAffected()
+		if err != nil {
+			return stats, err
+		}
+		stats.Removed += int(removed)
+		if _, err := tx.ExecContext(ctx, `DELETE FROM book_search WHERE rowid IN (SELECT id FROM books WHERE library_id='legacy' AND source_key='' AND file_hash='' AND missing=1)`); err != nil {
+			return stats, err
+		}
+	}
+	if snapshot.inpxHash != "" {
+		metadata := map[string]string{
+			"inpx_filename": snapshot.inpxName,
+			"inpx_sha256":   snapshot.inpxHash,
+		}
+		if snapshot.collection != "" {
+			metadata["collection_name"] = snapshot.collection
+		}
+		for key, value := range metadata {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO meta (key,value) VALUES (?,?) ON CONFLICT (key) DO UPDATE SET value=excluded.value`, "library."+libraryID+"."+key, value); err != nil {
+				return stats, err
+			}
+			if libraryID == "legacy" {
+				if _, err := tx.ExecContext(ctx, `INSERT INTO meta (key,value) VALUES (?,?) ON CONFLICT (key) DO UPDATE SET value=excluded.value`, key, value); err != nil {
+					return stats, err
+				}
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE libraries SET source_path=? WHERE id=?`, snapshot.sourcePath, libraryID); err != nil {
+			return stats, err
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return stats, err

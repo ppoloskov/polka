@@ -447,7 +447,7 @@ func (s *Server) handleCover(w http.ResponseWriter, r *http.Request) {
 		mime = "image/jpeg"
 	}
 	w.Header().Set("Content-Type", mime)
-	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
 	w.Write(data)
 }
 

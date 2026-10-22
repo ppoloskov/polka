@@ -191,6 +191,9 @@ func TestAPIEndToEnd(t *testing.T) {
 	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/png" {
 		t.Errorf("cover: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
+	if got := resp.Header.Get("Cache-Control"); got != "private, no-cache, must-revalidate" {
+		t.Errorf("cover Cache-Control = %q", got)
+	}
 
 	// fb2 download
 	resp, err = http.Get(ts.URL + "/Images/fb2/" + itoa64(bookID))

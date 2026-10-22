@@ -221,12 +221,6 @@ func runImport(log *slog.Logger, args []string) error {
 		return errors.New("укажите inpx-файл: polka import --inpx <файл.inpx>")
 	}
 
-	if replace {
-		for _, suffix := range []string{"", "-wal", "-shm"} {
-			os.Remove(cfg.DBPath() + suffix)
-		}
-	}
-
 	st, err := store.Open(cfg.DBPath())
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
@@ -247,7 +241,12 @@ func runImport(log *slog.Logger, args []string) error {
 		return fmt.Errorf("reserve catalog book IDs: %w", err)
 	}
 
-	stats, err := importer.ImportInpx(ctx, log, st, inpxPath, nil)
+	var stats store.ImportStats
+	if replace {
+		_, stats, err = importer.UpdateInpx(ctx, log, st, "legacy", inpxPath, cfg.DataDir, "", nil, false)
+	} else {
+		stats, err = importer.ImportInpx(ctx, log, st, inpxPath, nil)
+	}
 	if err != nil {
 		return err
 	}
