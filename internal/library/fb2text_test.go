@@ -1,8 +1,8 @@
 package library
 
 import (
+	"regexp"
 	"strings"
- "regexp"
 	"testing"
 )
 
@@ -55,7 +55,7 @@ func TestParseFB2Text(t *testing.T) {
 	}
 
 	ch1 := text.Chapters[1]
- ch1.HTML = regexp.MustCompile(`<span data-fb2-path="[^"]*">|</span>`).ReplaceAllString(ch1.HTML, "")
+	ch1.HTML = regexp.MustCompile(`<span data-fb2-path="[^"]*">|</span>`).ReplaceAllString(ch1.HTML, "")
 	if ch1.Title != "Глава первая" {
 		t.Errorf("ch1 title = %q", ch1.Title)
 	}
