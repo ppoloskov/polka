@@ -42,7 +42,14 @@ func (s *Store) AddBook(ctx context.Context, b *BookInput) (int64, error) {
 		return 0, err
 	}
 	defer tx.Rollback()
+	id, err := addBookTx(ctx, tx, b)
+	if err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
+}
 
+func addBookTx(ctx context.Context, tx *sql.Tx, b *BookInput) (int64, error) {
 	folderID, err := lookupOrInsert(ctx, tx,
 		`SELECT id FROM folders WHERE name = ?`, `INSERT INTO folders (name) VALUES (?)`, nil, b.Folder)
 	if err != nil {
@@ -79,18 +86,21 @@ func (s *Store) AddBook(ctx context.Context, b *BookInput) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	libraryID := b.LibraryID
+	if libraryID == "" {
+		libraryID = "legacy"
+	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO books (id, lib_id, title, series_id, series_num, folder_id, file, ext, size, lang, year, added, lib_rate, deleted, file_hash, content_hash, isbn)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
-		bookID, b.LibID, b.Title, seriesID, seriesNum, folderID, b.File, b.Ext, b.Size, b.Lang, year, b.Added, b.Rate, b.FileHash, b.ContentHash, NormalizeISBN(b.ISBN))
+		INSERT INTO books (id, lib_id, title, series_id, series_num, folder_id, file, ext, size, lang, year, added, lib_rate, deleted, file_hash, content_hash, isbn, library_id, source_key)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+		bookID, b.LibID, b.Title, seriesID, seriesNum, folderID, b.File, b.Ext, b.Size, b.Lang, year, b.Added, b.Rate, b.FileHash, b.ContentHash, NormalizeISBN(b.ISBN), libraryID, b.SourceKey)
 	if err != nil {
 		return 0, err
 	}
 	if _, err := addBookSeries(ctx, tx, bookID, series); err != nil {
 		return 0, err
 	}
-
 	var authorNames []string
 	for _, a := range b.Authors {
 		name := strings.TrimSpace(a.Last + " " + a.First + " " + a.Middle)
@@ -132,14 +142,12 @@ func (s *Store) AddBook(ctx context.Context, b *BookInput) (int64, error) {
 			return 0, err
 		}
 	}
-
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO book_search (rowid, title, authors, series) VALUES (?, ?, ?, ?)`,
 		bookID, b.Title, strings.Join(authorNames, " "), seriesTitles(series)); err != nil {
 		return 0, err
 	}
-
-	return bookID, tx.Commit()
+	return bookID, nil
 }
 
 // SetBookDeleted hides or restores a book, keeping the FTS index in sync.

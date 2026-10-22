@@ -130,6 +130,8 @@ upgrade. See the [compatibility contract](docs/specs/architecture/multiple-libra
 for migration and identity boundaries; the complete feature is not yet available.
 The foundation preserves existing catalog IDs and legacy root configuration;
 file serving can also resolve explicitly owned library roots independently.
+An internal disk-backed snapshot publisher stages and atomically applies one
+library's records; source adapters and management controls are still in progress.
 
 Polka understands `.inpx` index files (MyHomeLib / Flibusta format) — both
 from the command line and from the web UI (*Manage → Import*):
