@@ -108,15 +108,26 @@ func (f *File) CollectionDescription() string { return f.desc }
 
 // Records sequentially calls fn for every record of all .inp files.
 func (f *File) Records(fn func(*Record) error) error {
+	return f.records(fn, false)
+}
+
+// RecordsStrict sequentially calls fn for each complete book record. Blank
+// lines are ignored; malformed nonblank rows stop iteration with their source
+// file and line number. Records remains permissive for existing callers.
+func (f *File) RecordsStrict(fn func(*Record) error) error {
+	return f.records(fn, true)
+}
+
+func (f *File) records(fn func(*Record) error, strict bool) error {
 	for _, inp := range f.inps {
-		if err := f.readInp(inp, fn); err != nil {
+		if err := f.readInp(inp, fn, strict); err != nil {
 			return fmt.Errorf("%s: %w", inp.Name, err)
 		}
 	}
 	return nil
 }
 
-func (f *File) readInp(inp *zip.File, fn func(*Record) error) error {
+func (f *File) readInp(inp *zip.File, fn func(*Record) error, strict bool) error {
 	rc, err := inp.Open()
 	if err != nil {
 		return err
@@ -132,7 +143,11 @@ func (f *File) readInp(inp *zip.File, fn func(*Record) error) error {
 	for lineNo := 1; ; lineNo++ {
 		line, err := r.ReadString('\n')
 		if line != "" {
-			if rec := parseLine(line, f.fields, defaultFolder); rec != nil {
+			rec, parseErr := parseLineMode(line, f.fields, defaultFolder, strict)
+			if parseErr != nil {
+				return fmt.Errorf("line %d: %w", lineNo, parseErr)
+			}
+			if rec != nil {
 				if err := fn(rec); err != nil {
 					return err
 				}
@@ -148,12 +163,27 @@ func (f *File) readInp(inp *zip.File, fn func(*Record) error) error {
 }
 
 func parseLine(line string, fields []string, defaultFolder string) *Record {
+	rec, _ := parseLineMode(line, fields, defaultFolder, false)
+	return rec
+}
+
+func parseLineMode(line string, fields []string, defaultFolder string, strict bool) (*Record, error) {
 	line = strings.TrimRight(line, "\r\n")
 	if line == "" {
-		return nil
+		return nil, nil
 	}
 
 	values := strings.Split(line, string(fieldsSeparator))
+	if strict {
+		if len(values) < len(fields) {
+			return nil, fmt.Errorf("incomplete record: got %d fields, want %d", len(values), len(fields))
+		}
+		for _, extra := range values[len(fields):] {
+			if strings.TrimSpace(extra) != "" {
+				return nil, fmt.Errorf("unexpected extra field")
+			}
+		}
+	}
 	rec := &Record{Folder: defaultFolder}
 	for i, name := range fields {
 		if i >= len(values) {
@@ -199,9 +229,12 @@ func parseLine(line string, fields []string, defaultFolder string) *Record {
 	}
 
 	if rec.Title == "" || rec.File == "" {
-		return nil
+		if strict {
+			return nil, fmt.Errorf("record requires TITLE and FILE")
+		}
+		return nil, nil
 	}
-	return rec
+	return rec, nil
 }
 
 func parseAuthors(s string) []Author {
