@@ -474,6 +474,11 @@ func (s *Server) handleCover(w http.ResponseWriter, r *http.Request) {
 	data, mime, err := lib.Cover(f.ID, f.Folder, f.File, f.Ext)
 	if err != nil {
 		s.log.Info("no cover", "book", f.ID, "folder", f.Folder, "file", f.File, "error", err)
+		if errors.Is(err, library.ErrNoFile) {
+			// Let browsers remember a missing cover instead of
+			// re-requesting it on every page view.
+			w.Header().Set("Cache-Control", "private, max-age=3600")
+		}
 		s.apiError(w, err)
 		return
 	}

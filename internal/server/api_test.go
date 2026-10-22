@@ -34,12 +34,36 @@ const testFB2 = `<?xml version="1.0" encoding="UTF-8"?>
 <binary id="c.png" content-type="image/png">iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==</binary>
 </FictionBook>`
 
+// Same book without a cover image.
+const testFB2NoCover = `<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+<description>
+  <title-info>
+    <book-title>Без обложки</book-title>
+    <annotation><p>Нет картинки.</p></annotation>
+  </title-info>
+</description>
+<body><section><p>Текст.</p></section></body>
+</FictionBook>`
+
 // newTestServer starts a server with one book in a synthetic library.
 func newTestServer(t *testing.T) (*httptest.Server, int64) {
 	t.Helper()
+	ts, ids := newTestLibrary(t, []testBook{{"Война и мир", testFB2}})
+	return ts, ids[0]
+}
+
+type testBook struct {
+	title, fb2 string
+}
+
+// newTestLibrary starts a server whose archive holds one FB2 file per book
+// (100.fb2, 101.fb2, …) with a matching catalog row.
+func newTestLibrary(t *testing.T, books []testBook) (*httptest.Server, []int64) {
+	t.Helper()
 	dir := t.TempDir()
 
-	// Archive containing the book
+	// Archive containing the books
 	libDir := filepath.Join(dir, "lib")
 	os.MkdirAll(libDir, 0o755)
 	zf, err := os.Create(filepath.Join(libDir, "arch-001.zip"))
@@ -47,12 +71,14 @@ func newTestServer(t *testing.T) (*httptest.Server, int64) {
 		t.Fatal(err)
 	}
 	zw := zip.NewWriter(zf)
-	w, _ := zw.Create("100.fb2")
-	w.Write([]byte(testFB2))
+	for i, b := range books {
+		w, _ := zw.Create(itoa(100+i) + ".fb2")
+		w.Write([]byte(b.fb2))
+	}
 	zw.Close()
 	zf.Close()
 
-	// Database with this book
+	// Database with these books
 	st, err := store.Open(filepath.Join(dir, "test.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -64,24 +90,38 @@ func newTestServer(t *testing.T) (*httptest.Server, int64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = session.Add(&store.BookInput{
-		Title:   "Война и мир",
-		Authors: []store.AuthorName{{Last: "Толстой", First: "Лев"}},
-		Genres:  []string{"prose_classic"},
-		Series:  "Классика", SeriesNum: 1,
-		Folder: "arch-001.zip", File: "100", Ext: "fb2",
-		Size: 1000, Lang: "ru", Added: "2024-01-01", Rate: 5,
-	})
-	if err != nil {
-		t.Fatal(err)
+	for i, b := range books {
+		err = session.Add(&store.BookInput{
+			Title:   b.title,
+			Authors: []store.AuthorName{{Last: "Толстой", First: "Лев"}},
+			Genres:  []string{"prose_classic"},
+			Series:  "Классика", SeriesNum: i + 1,
+			Folder: "arch-001.zip", File: itoa(100 + i), Ext: "fb2",
+			Size: 1000, Lang: "ru", Added: "2024-01-01", Rate: 5,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := session.Finish(); err != nil {
 		t.Fatal(err)
 	}
 
-	var bookID int64
-	if err := st.DB().QueryRow(`SELECT id FROM books`).Scan(&bookID); err != nil {
+	rows, err := st.DB().Query(`SELECT id FROM books ORDER BY id`)
+	if err != nil {
 		t.Fatal(err)
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if len(ids) != len(books) {
+		t.Fatalf("imported %d books, want %d", len(ids), len(books))
 	}
 
 	users, err := auth.Open(filepath.Join(dir, "users.db"))
@@ -97,7 +137,7 @@ func newTestServer(t *testing.T) (*httptest.Server, int64) {
 
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(ts.Close)
-	return ts, bookID
+	return ts, ids
 }
 
 func getJSON(t *testing.T, url string) map[string]any {
@@ -298,5 +338,41 @@ func TestCoverETagRevalidation(t *testing.T) {
 	}
 	if want := "\"" + itoa64(f.bookID) + "-1\""; rotated != want {
 		t.Errorf("cover ETag after publish = %q, want %q", rotated, want)
+	}
+}
+
+// A missing cover answers 404 with a cache allowance, so browsers stop
+// re-requesting it on every page view; successful covers are unchanged.
+func TestCoverMissingIsCacheable(t *testing.T) {
+	ts, ids := newTestLibrary(t, []testBook{
+		{"Война и мир", testFB2},
+		{"Без обложки", testFB2NoCover},
+	})
+
+	resp, err := http.Get(ts.URL + "/Images/covers/" + itoa64(ids[1]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("coverless book -> %d, want 404", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "private, max-age=3600" {
+		t.Errorf("coverless Cache-Control = %q, want %q", got, "private, max-age=3600")
+	}
+
+	resp, err = http.Get(ts.URL + "/Images/covers/" + itoa64(ids[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("cover -> %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "private, max-age=0, must-revalidate" {
+		t.Errorf("cover Cache-Control = %q", got)
+	}
+	if resp.Header.Get("ETag") == "" {
+		t.Error("cover ETag is missing")
 	}
 }
