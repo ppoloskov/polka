@@ -365,6 +365,13 @@ const ru = {
   "users.create": "Создать",
   // Shared
   "downloadAll": "скачать всё (zip)",
+  "booklist.view": "Вид книг",
+  "booklist.grid": "Обложки",
+  "booklist.list": "Список",
+  "booklist.language": "Язык",
+  "booklist.allLanguages": "Все языки",
+  "booklist.groupSeries": "Группировать по сериям",
+  "booklist.noSeries": "Вне серий",
   "source.fantlab": "ФантЛаб",
   "source.tastedive": "TasteDive",
 };
@@ -722,6 +729,13 @@ const en = {
   "users.namePh": "Name (optional)",
   "users.create": "Create",
   "downloadAll": "download all (zip)",
+  "booklist.view": "Book view",
+  "booklist.grid": "Covers",
+  "booklist.list": "List",
+  "booklist.language": "Language",
+  "booklist.allLanguages": "All languages",
+  "booklist.groupSeries": "Group by series",
+  "booklist.noSeries": "Not in a series",
   "source.fantlab": "FantLab",
   "source.tastedive": "TasteDive",
 };
