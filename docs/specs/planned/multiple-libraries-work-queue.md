@@ -13,10 +13,13 @@ architect reviews scope/style/behavior before Git publication.
 | WP2 | Resolve each book's owning root across all serving paths while preserving dynamic legacy root and uploads | WP1 | same config/root changes, two roots with same locator, reader/download/cover/export/email, existing suites | Published PR #2 |
 | WP3 | Disk-backed snapshot staging and atomic target-only publication; missing separate from admin deleted; preserve personal state and other libraries | WP1 | diff/idempotence/remove/reappear/admin hidden, rollback/error/cancel/restart, no global search/index clearing | Published PR #3 |
 | WP3b | Availability filtering before exposing update entrypoints; missing/disabled excluded from normal counts, browsing, files and cached chapters | WP2, WP3 | missing/disabled counts/search/author/series/file/recommendations, reader-cache removal and restore | Published PR #4 |
-| WP4a | Strict complete INPX staging and exact immutable record keys | WP3 | owned-copy stability, same/changed/source-deleted records, malformed/duplicate/corrupt input | Published PR #5 |
+| WP4a | Strict complete INPX staging and exact immutable record keys | WP3 | owned-copy stability, same/changed/source-deleted records, malformed/duplicate/corrupt input | Published PR #8 (replaces #5) |
 | WP4b | Saved-source updater and legacy CLI/web import adapters over same engine | WP3b, WP4a | path/upload/default target, failed replace preserves data, empty guard, unchanged old contracts | Published PR #7; exact checks and native upgrade pass |
 | WP5 | Recursive folder adapter, full-byte hashes, existing metadata parsers/fallback | WP2, WP3 | recursive add/change/remove, duplicate copies, symlinks/traversal/unreadable/unstable inputs, realistic source tree | Exact commit validated; PR #6 publication underway |
-| WP6 | Admin libraries UI/API/CLI, combined browsing/filter/source badges and unavailable personal entries | WP4, WP5 | admin authorization/demo/connected proxy, counts/pagination/filter/bulk, existing UI tests/build and real HTTP workflows | Pending |
+| WP6a | Admin registration/name/enable/manual-update API and diff status | WP4, WP5 | saved-source lifecycle, corruption rollback, isolation, auth/demo/private paths/cache counts | Published PR #9; exact full checks pass |
+| WP6b | Combined or scoped catalog API, source metadata and unavailable personal cards | WP6a | filter-before-limit/counts/search/recs/collections and retained personal references | Reviewed; isolated store/server suites and vet pass |
+| WP6c | OPDS scope navigation and unavailable reading metadata | WP6b | scoped feed/pagination links and acquisition safety | Implementing separately |
+| WP6d | Existing admin UI management and reader library selection/source badges | WP6a, WP6b | existing and new UI tests/build plus rendered public workflow | Implementing admin screen first |
 | WP7 | Upgrade/restart and end-to-end acceptance, final compatibility cleanup/docs | All | previous-version data and unchanged config/clients; both source types; source failure; repeated updates; full Go/Node/build/vet; actual container proof where available | Pending |
 
 Each package changes only its owned modules and necessary documentation. No
@@ -32,7 +35,7 @@ all feature claims wait for WP7 operational acceptance.
 | --- | --- | --- | --- |
 | Image-only upgrade; no setup/client change | WP1, WP2, WP4, WP7 | v1/v5 upgrade, unchanged mounts/flags, old endpoints and state | Pending |
 | Separate copies, no clashes | WP1, WP3–WP6 | two libraries same source ID/path, distinct public IDs/state | Pending |
-| Manual INPX and folder updates | WP3–WP6 | admin/CLI first-run, repeat, durable diff and restart | Pending |
+| Manual INPX and folder updates | WP3–WP6 | admin first-run, old CLI compatibility, repeat, durable diff and restart | Pending |
 | Failure leaves published catalog intact | WP3–WP5, WP7 | malformed/partial/missing/full-disk/cancel/commit fault tests | Pending |
 | Removed entries retain personal state | WP3, WP6, WP7 | separate users DB, unavailable list/history cards | Pending |
 | Per-root serving and existing source formats | WP2, WP4, WP5, WP7 | ZIP/7z/plain folder reader/cover/download/export/mail | Pending |
@@ -138,3 +141,12 @@ upgrade, repeated restart, failed replace rollback and successful explicit
 replacement with retained unavailable references. Management API is reviewed
 and passed isolated focused suites/vet; commit/full validation next. Catalog
 filtering and admin UI are separate packages in progress.
+
+Delivery correction: the original INPX staging PR #5 was closed after a branch
+name was reused for legacy adapters. Replacement [PR #8](https://github.com/ppoloskov/polka/pull/8)
+is the exact validated staging commit on a dedicated branch; PR #6 already uses
+that branch. The full open stack was audited for intended head/base scopes.
+[Management PR #9](https://github.com/ppoloskov/polka/pull/9), exact `e8d15a9`, passed
+full Go tests/vet/server and desktop builds from archive pr9. New library controls
+use the existing admin screen; a separate management CLI is deferred to keep
+v1 narrow. Existing CLI imports are preserved and validated by WP4b.

@@ -24,6 +24,9 @@ func bookJSON(b store.Book) map[string]any {
 		"SeqNumber":    b.SeqNumber,
 		"Year":         b.Year,
 		"LibRate":      b.LibRate,
+		"LibraryID":    b.LibraryID,
+		"LibraryName":  b.LibraryName,
+		"Available":    b.Available,
 	}
 }
 
@@ -82,7 +85,8 @@ func (s *Server) apiError(w http.ResponseWriter, err error) {
 
 func (s *Server) handleGetHomeShelves(w http.ResponseWriter, r *http.Request) {
 	limit := intParam(r, "limit", 12)
-	shelves, err := s.st.HomeShelves(r.Context(), limit)
+	libraryID := r.URL.Query().Get("libraryId")
+	shelves, err := s.st.HomeShelves(r.Context(), limit, libraryID)
 	if err != nil {
 		s.apiError(w, err)
 		return
@@ -94,20 +98,20 @@ func (s *Server) handleGetHomeShelves(w http.ResponseWriter, r *http.Request) {
 	if u := s.currentUser(r); u != nil {
 		lang := reqLang(r)
 		var personal []map[string]any
-		if reading := s.readingShelf(r, u.ID, limit); len(reading) > 0 {
+		if reading := s.readingShelf(r, u.ID, limit, libraryID); len(reading) > 0 {
 			personal = append(personal, map[string]any{
 				"id": "reading", "title": tr(lang, "shelf.reading"), "books": reading, "hasMore": false,
 			})
 		}
-		if wishlist := s.wishlistShelf(r, u.ID, limit); wishlist != nil {
+		if wishlist := s.wishlistShelf(r, u.ID, limit, libraryID); wishlist != nil {
 			wishlist["title"] = tr(lang, "shelf.wishlist")
 			personal = append(personal, wishlist)
 		}
-		personal = append(personal, s.recShelves(r, u.ID, limit)...)
+		personal = append(personal, s.recShelves(r, u.ID, limit, libraryID)...)
 		out = append(personal, out...)
 	}
 	// Collections ("100 books by Forbes"…) go between personal and shared shelves.
-	if cs := s.collectionShelves(r, limit); len(cs) > 0 {
+	if cs := s.collectionShelves(r, limit, libraryID); len(cs) > 0 {
 		split := len(out) - len(shelves)
 		out = append(append(append([]map[string]any{}, out[:split]...), cs...), out[split:]...)
 	}
@@ -115,22 +119,26 @@ func (s *Server) handleGetHomeShelves(w http.ResponseWriter, r *http.Request) {
 }
 
 // wishlistShelf is the "Want to read" shelf, if it has any books.
-func (s *Server) wishlistShelf(r *http.Request, userID int64, limit int) map[string]any {
+func (s *Server) wishlistShelf(r *http.Request, userID int64, limit int, libraryID string) map[string]any {
 	wl, err := s.users.Wishlist(r.Context(), userID)
 	if err != nil {
 		return nil
 	}
-	ids, err := s.users.ListBookIDs(r.Context(), userID, wl.ID, limit+1, 0)
-	if err != nil || len(ids) == 0 {
+	refLimit := limit + 1
+	if libraryID != "" {
+		refLimit = -1
+	}
+	ids, err := s.users.ListBookIDs(r.Context(), userID, wl.ID, refLimit, 0)
+	if err != nil {
 		return nil
 	}
-	hasMore := len(ids) > limit
-	if hasMore {
-		ids = ids[:limit]
-	}
-	books, err := s.st.BooksByIDs(r.Context(), ids)
+	books, err := s.st.PersonalBooksByIDs(r.Context(), ids, libraryID)
 	if err != nil || len(books) == 0 {
 		return nil
+	}
+	hasMore := len(books) > limit
+	if hasMore {
+		books = books[:limit]
 	}
 	return map[string]any{
 		"id": "wishlist", "title": wl.Name, "books": booksJSON(books), "hasMore": hasMore,
@@ -138,21 +146,31 @@ func (s *Server) wishlistShelf(r *http.Request, userID int64, limit int) map[str
 }
 
 // readingShelf returns books from reading progress with the fraction read.
-func (s *Server) readingShelf(r *http.Request, userID int64, limit int) []map[string]any {
-	progress, err := s.users.ListProgress(r.Context(), userID, limit)
+func (s *Server) readingShelf(r *http.Request, userID int64, limit int, libraryID string) []map[string]any {
+	if limit <= 0 {
+		return nil
+	}
+	refLimit := limit
+	if libraryID != "" {
+		refLimit = -1
+	}
+	progress, err := s.users.ListProgress(r.Context(), userID, refLimit)
 	if err != nil || len(progress) == 0 {
 		return nil
 	}
 	ids := make([]int64, 0, len(progress))
-	overall := make(map[int64]float64, len(progress))
+	overall := make(map[int64]float64)
 	for _, p := range progress {
 		ids = append(ids, p.BookID)
 		overall[p.BookID] = p.Overall
 	}
-	books, err := s.st.BooksByIDs(r.Context(), ids)
+	books, err := s.st.PersonalBooksByIDs(r.Context(), ids, libraryID)
 	if err != nil {
 		s.log.Warn("reading shelf", "error", err)
 		return nil
+	}
+	if len(books) > limit {
+		books = books[:limit]
 	}
 	out := make([]map[string]any, 0, len(books))
 	for _, b := range books {
@@ -164,7 +182,7 @@ func (s *Server) readingShelf(r *http.Request, userID int64, limit int) []map[st
 }
 
 func (s *Server) handleGetCatalogShelves(w http.ResponseWriter, r *http.Request) {
-	shelves, err := s.st.CatalogShelves(r.Context(), intParam(r, "count", 6), intParam(r, "limit", 12))
+	shelves, err := s.st.CatalogShelves(r.Context(), intParam(r, "count", 6), intParam(r, "limit", 12), r.URL.Query().Get("libraryId"))
 	if err != nil {
 		s.apiError(w, err)
 		return
@@ -186,10 +204,11 @@ func (s *Server) handleGetShelfBooks(w http.ResponseWriter, r *http.Request) {
 	var books []store.Book
 	var title string
 	var err error
+	libraryID := r.URL.Query().Get("libraryId")
 	if slug, ok := strings.CutPrefix(shelfID, collectionShelfPrefix); ok {
-		books, title, err = s.collectionShelfBooks(r.Context(), slug, limit+1, offset)
+		books, title, err = s.collectionShelfBooks(r.Context(), slug, limit+1, offset, libraryID)
 	} else {
-		books, title, err = s.st.ShelfBooks(r.Context(), shelfID, limit+1, offset)
+		books, title, err = s.st.ShelfBooks(r.Context(), shelfID, limit+1, offset, libraryID)
 	}
 	if err != nil {
 		s.apiError(w, err)
@@ -233,13 +252,14 @@ func (s *Server) handleGetBooksByIDs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetSearchStats(w http.ResponseWriter, r *http.Request) {
 	query := searchParam(r)
+	libraryID := r.URL.Query().Get("libraryId")
 	if store.LooksLikeISBN(query) {
 		writeJSON(w, map[string]any{"searchStats": map[string]int{
-			"bookTitles": len(s.isbnBooks(r, query)), "authors": 0, "bookSeries": 0, "genres": 0,
+			"bookTitles": len(s.isbnBooks(r, query, libraryID)), "authors": 0, "bookSeries": 0, "genres": 0,
 		}})
 		return
 	}
-	stats, err := s.st.SearchStats(r.Context(), query)
+	stats, err := s.st.SearchStats(r.Context(), query, libraryID)
 	if err != nil {
 		s.apiError(w, err)
 		return
@@ -248,17 +268,18 @@ func (s *Server) handleGetSearchStats(w http.ResponseWriter, r *http.Request) {
 		"bookTitles": stats.BookTitles,
 		"authors":    stats.Authors,
 		"bookSeries": stats.BookSeries,
-		"genres":     len(s.searchGenres(r, query)),
+		"genres":     len(s.searchGenres(r, query, libraryID)),
 	}})
 }
 
 func (s *Server) handleGetSearchTitles(w http.ResponseWriter, r *http.Request) {
 	query := searchParam(r)
+	libraryID := r.URL.Query().Get("libraryId")
 	if store.LooksLikeISBN(query) {
-		writeJSON(w, map[string]any{"titlesList": booksJSON(s.isbnBooks(r, query))})
+		writeJSON(w, map[string]any{"titlesList": booksJSON(s.isbnBooks(r, query, libraryID))})
 		return
 	}
-	books, err := s.st.SearchTitles(r.Context(), query, 250)
+	books, err := s.st.SearchTitles(r.Context(), query, 250, libraryID)
 	if err != nil {
 		s.apiError(w, err)
 		return
@@ -267,7 +288,7 @@ func (s *Server) handleGetSearchTitles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetSearchAuthors(w http.ResponseWriter, r *http.Request) {
-	authors, err := s.st.SearchAuthors(r.Context(), searchParam(r), 250)
+	authors, err := s.st.SearchAuthors(r.Context(), searchParam(r), 250, r.URL.Query().Get("libraryId"))
 	if err != nil {
 		s.apiError(w, err)
 		return
@@ -280,7 +301,7 @@ func (s *Server) handleGetSearchAuthors(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleGetSearchSeries(w http.ResponseWriter, r *http.Request) {
-	series, err := s.st.SearchSeries(r.Context(), searchParam(r), 250)
+	series, err := s.st.SearchSeries(r.Context(), searchParam(r), 250, r.URL.Query().Get("libraryId"))
 	if err != nil {
 		s.apiError(w, err)
 		return
@@ -298,7 +319,7 @@ func (s *Server) handleGetAuthorBooks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "selectedItemID required", http.StatusBadRequest)
 		return
 	}
-	books, name, err := s.st.AuthorBooks(r.Context(), id)
+	books, name, err := s.st.AuthorBooks(r.Context(), id, r.URL.Query().Get("libraryId"))
 	if err != nil {
 		s.apiError(w, err)
 		return
@@ -312,7 +333,7 @@ func (s *Server) handleGetSeriesBooks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "selectedItemID required", http.StatusBadRequest)
 		return
 	}
-	books, title, err := s.st.SeriesBooks(r.Context(), id)
+	books, title, err := s.st.SeriesBooks(r.Context(), id, r.URL.Query().Get("libraryId"))
 	if err != nil {
 		s.apiError(w, err)
 		return
@@ -358,6 +379,9 @@ func (s *Server) handleGetBookForm(w http.ResponseWriter, r *http.Request) {
 			"Genres":       strings.Join(genreNames, ", "),
 			"Ext":          "." + d.Ext,
 			"FileName":     d.File,
+			"LibraryID":    d.LibraryID,
+			"LibraryName":  d.LibraryName,
+			"Available":    d.Available,
 		},
 		"authors":    authors,
 		"genresList": genreList,

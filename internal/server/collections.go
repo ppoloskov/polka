@@ -55,7 +55,7 @@ func collectionJSON(c collections.Collection) map[string]any {
 }
 
 // collectionShelves returns the home page shelves: collections with at least one match.
-func (s *Server) collectionShelves(r *http.Request, limit int) []map[string]any {
+func (s *Server) collectionShelves(r *http.Request, limit int, libraryIDs ...string) []map[string]any {
 	if s.cols == nil {
 		return nil
 	}
@@ -65,12 +65,16 @@ func (s *Server) collectionShelves(r *http.Request, limit int) []map[string]any 
 		return nil
 	}
 	disabled := s.disabledOrigins(r.Context())
+	libraryID := ""
+	if len(libraryIDs) > 0 {
+		libraryID = libraryIDs[0]
+	}
 	var out []map[string]any
 	for _, c := range list {
 		if c.Matched == 0 || disabled[c.Origin] {
 			continue
 		}
-		books, _, err := s.collectionShelfBooks(r.Context(), c.Slug, limit+1, 0)
+		books, _, err := s.collectionShelfBooks(r.Context(), c.Slug, limit+1, 0, libraryID)
 		if err != nil || len(books) == 0 {
 			continue
 		}
@@ -78,20 +82,23 @@ func (s *Server) collectionShelves(r *http.Request, limit int) []map[string]any 
 		if hasMore {
 			books = books[:limit]
 		}
-		out = append(out, map[string]any{
-			"id":       collectionShelfPrefix + c.Slug,
-			"title":    c.Title,
-			"subtitle": tr(reqLang(r), "shelf.collection.sub", c.Matched, c.Total),
-			"slug":     c.Slug,
-			"books":    booksJSON(books),
-			"hasMore":  hasMore,
-		})
+		shelf := map[string]any{
+			"id":      collectionShelfPrefix + c.Slug,
+			"title":   c.Title,
+			"slug":    c.Slug,
+			"books":   booksJSON(books),
+			"hasMore": hasMore,
+		}
+		if libraryID == "" {
+			shelf["subtitle"] = tr(reqLang(r), "shelf.collection.sub", c.Matched, c.Total)
+		}
+		out = append(out, shelf)
 	}
 	return out
 }
 
 // collectionShelfBooks returns a page of the collection's books in list order.
-func (s *Server) collectionShelfBooks(ctx context.Context, slug string, limit, offset int) ([]store.Book, string, error) {
+func (s *Server) collectionShelfBooks(ctx context.Context, slug string, limit, offset int, libraryIDs ...string) ([]store.Book, string, error) {
 	if s.cols == nil {
 		return nil, "", store.ErrNotFound
 	}
@@ -102,11 +109,39 @@ func (s *Server) collectionShelfBooks(ctx context.Context, slug string, limit, o
 	if err != nil {
 		return nil, "", err
 	}
-	ids, err := s.cols.BookIDs(ctx, c.ID, limit, offset)
-	if err != nil || len(ids) == 0 {
+	libraryID := ""
+	if len(libraryIDs) > 0 {
+		libraryID = libraryIDs[0]
+	}
+	if libraryID == "" {
+		ids, err := s.cols.BookIDs(ctx, c.ID, limit, offset)
+		if err != nil || len(ids) == 0 {
+			return nil, c.Title, err
+		}
+		books, err := s.st.BooksByIDs(ctx, ids)
+		return books, c.Title, err
+	}
+	items, err := s.cols.Items(ctx, c.ID)
+	if err != nil {
 		return nil, c.Title, err
 	}
-	books, err := s.st.BooksByIDs(ctx, ids)
+	ids := make([]int64, 0, len(items))
+	for _, item := range items {
+		if item.BookID != 0 {
+			ids = append(ids, item.BookID)
+		}
+	}
+	books, err := s.st.BooksByIDs(ctx, ids, libraryID)
+	if err != nil {
+		return nil, c.Title, err
+	}
+	if offset >= len(books) {
+		return nil, c.Title, nil
+	}
+	books = books[offset:]
+	if limit > 0 && len(books) > limit {
+		books = books[:limit]
+	}
 	return books, c.Title, err
 }
 

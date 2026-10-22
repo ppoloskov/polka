@@ -19,6 +19,9 @@ type Book struct {
 	LibRate     float64
 	Ext         string
 	Size        int64
+	LibraryID   string
+	LibraryName string
+	Available   bool
 }
 
 // BookFile holds the data needed to serve a book file.
@@ -78,10 +81,30 @@ const bookMetadataColumns = `
 const bookColumns = bookIdentityColumns + `
 	coalesce(s.title, ''),
 	coalesce(b.series_num, 0),
-` + bookMetadataColumns
+` + bookMetadataColumns + `,
+	b.library_id,
+	l.name,
+	(b.missing = 0 AND l.enabled = 1)`
 
-const bookFrom = ` FROM books b LEFT JOIN series s ON s.id = b.series_id`
+const bookFrom = ` FROM books b LEFT JOIN series s ON s.id = b.series_id JOIN libraries l ON l.id = b.library_id`
 const availableBook = `b.missing = 0 AND EXISTS (SELECT 1 FROM libraries l WHERE l.id = b.library_id AND l.enabled = 1)`
+
+func scopeLibraryID(ids []string) string {
+	if len(ids) > 0 {
+		return ids[0]
+	}
+	return ""
+}
+
+func addLibraryScope(where, alias, libraryID string, args []any) (string, []any) {
+	if libraryID == "" {
+		return where, args
+	}
+	if where != "" {
+		where += ` AND `
+	}
+	return where + alias + `.library_id = ?`, append(args, libraryID)
+}
 
 func (s *Store) queryBooks(ctx context.Context, where string, order string, limit, offset int, args ...any) ([]Book, error) {
 	q := `SELECT` + bookColumns + bookFrom + ` WHERE b.deleted = 0 AND ` + availableBook
@@ -109,7 +132,8 @@ func (s *Store) scanBooks(ctx context.Context, q string, args ...any) ([]Book, e
 	for rows.Next() {
 		var b Book
 		if err := rows.Scan(&b.ID, &b.Title, &b.AuthorNames, &b.SeriesTitle,
-			&b.SeqNumber, &b.Year, &b.LibRate, &b.Ext, &b.Size); err != nil {
+			&b.SeqNumber, &b.Year, &b.LibRate, &b.Ext, &b.Size,
+			&b.LibraryID, &b.LibraryName, &b.Available); err != nil {
 			return nil, err
 		}
 		books = append(books, b)
@@ -160,40 +184,46 @@ type SearchStats struct {
 	BookTitles, Authors, BookSeries int
 }
 
-func (s *Store) SearchStats(ctx context.Context, query string) (SearchStats, error) {
+func (s *Store) SearchStats(ctx context.Context, query string, libraryIDs ...string) (SearchStats, error) {
 	var st SearchStats
 	titleQ, plainQ := ftsQuery(query, "title"), ftsQuery(query, "")
+	libraryID := scopeLibraryID(libraryIDs)
 	if plainQ == "" {
 		return st, nil
 	}
+	titleWhere, titleArgs := addLibraryScope(`b.deleted = 0 AND `+availableBook, "b", libraryID, []any{titleQ})
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT count(*) FROM book_search bs JOIN books b ON b.id = bs.rowid
-		WHERE book_search MATCH ? AND b.deleted = 0 AND `+availableBook, titleQ).Scan(&st.BookTitles); err != nil {
+		WHERE book_search MATCH ? AND `+titleWhere, titleArgs...).Scan(&st.BookTitles); err != nil {
 		return st, err
 	}
+	authorScope, authorScopeArgs := addLibraryScope(`b.deleted = 0 AND `+availableBook, "b", libraryID, nil)
+	authorArgs := append([]any{plainQ}, authorScopeArgs...)
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT count(*) FROM authors_search a
 		WHERE authors_search MATCH ? AND EXISTS (
 			SELECT 1 FROM book_authors ba JOIN books b ON b.id = ba.book_id
-			WHERE ba.author_id = a.rowid AND b.deleted = 0 AND `+availableBook+`)`, plainQ).Scan(&st.Authors); err != nil {
+			WHERE ba.author_id = a.rowid AND `+authorScope+`)`, authorArgs...).Scan(&st.Authors); err != nil {
 		return st, err
 	}
+	seriesScope, seriesScopeArgs := addLibraryScope(`b.deleted = 0 AND `+availableBook, "b", libraryID, nil)
+	seriesArgs := append([]any{plainQ}, seriesScopeArgs...)
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT count(*) FROM series_search ss
 		WHERE series_search MATCH ? AND EXISTS (
 			SELECT 1 FROM book_series bs JOIN books b ON b.id = bs.book_id
-			WHERE bs.series_id = ss.rowid AND b.deleted = 0 AND `+availableBook+`)`, plainQ).Scan(&st.BookSeries); err != nil {
+			WHERE bs.series_id = ss.rowid AND `+seriesScope+`)`, seriesArgs...).Scan(&st.BookSeries); err != nil {
 		return st, err
 	}
 	return st, nil
 }
 
-func (s *Store) SearchTitles(ctx context.Context, query string, limit int) ([]Book, error) {
+func (s *Store) SearchTitles(ctx context.Context, query string, limit int, libraryIDs ...string) ([]Book, error) {
 	q := ftsQuery(query, "title")
 	if q == "" {
 		return nil, nil
 	}
-	return s.rankedSearch(ctx, q, limit, 0)
+	return s.rankedSearch(ctx, q, limit, 0, scopeLibraryID(libraryIDs))
 }
 
 // rankedSearch returns FTS matches ordered by relevance (bm25), with the
@@ -201,44 +231,68 @@ func (s *Store) SearchTitles(ctx context.Context, query string, limit int) ([]Bo
 // higher rating come first. When the query matches a huge share of the
 // library, ranking hundreds of thousands of rows costs more than it is
 // worth: the guard keeps the old take-first behavior, sorted by rating.
-func (s *Store) rankedSearch(ctx context.Context, ftsQ string, limit, offset int) ([]Book, error) {
+func (s *Store) rankedSearch(ctx context.Context, ftsQ string, limit, offset int, libraryID string) ([]Book, error) {
 	var matches int
 	if err := s.db.QueryRowContext(ctx,
 		`SELECT count(*) FROM book_search WHERE book_search MATCH ?`, ftsQ).Scan(&matches); err != nil {
 		return nil, err
 	}
+	innerScope, outerScope := "", ""
+	args := []any{ftsQ, limit, offset}
+	if libraryID != "" {
+		innerScope, outerScope = ` AND b.library_id = ?`, ` AND b.library_id = ?`
+		args = []any{ftsQ, libraryID, limit, offset, libraryID}
+	}
 	if matches > 5000 {
+		args = []any{ftsQ, limit, offset}
+		if libraryID != "" {
+			args = []any{ftsQ, libraryID, limit, offset}
+		}
 		return s.scanBooks(ctx, `SELECT`+bookColumns+`
 			FROM (SELECT book_search.rowid FROM book_search JOIN books b ON b.id = book_search.rowid
-			      WHERE book_search MATCH ? AND b.deleted = 0 AND `+availableBook+` LIMIT ? OFFSET ?) m
+			      WHERE book_search MATCH ? AND b.deleted = 0 AND `+availableBook+innerScope+` LIMIT ? OFFSET ?) m
 			JOIN books b ON b.id = m.rowid
 			LEFT JOIN series s ON s.id = b.series_id
+			JOIN libraries l ON l.id = b.library_id
 			WHERE b.deleted = 0 AND `+availableBook+`
-			ORDER BY b.lib_rate DESC, b.title`, ftsQ, limit, offset)
+			ORDER BY b.lib_rate DESC, b.title`, args...)
 	}
 	return s.scanBooks(ctx, `SELECT`+bookColumns+`
 		FROM (SELECT book_search.rowid, rank FROM book_search JOIN books b ON b.id = book_search.rowid
-		      WHERE book_search MATCH ? AND b.deleted = 0 AND `+availableBook+` ORDER BY rank LIMIT ? OFFSET ?) m
+		      WHERE book_search MATCH ? AND b.deleted = 0 AND `+availableBook+innerScope+` ORDER BY rank LIMIT ? OFFSET ?) m
 		JOIN books b ON b.id = m.rowid
 		LEFT JOIN series s ON s.id = b.series_id
-		WHERE b.deleted = 0 AND `+availableBook+`
-		ORDER BY m.rank, b.lib_rate DESC, b.id`, ftsQ, limit, offset)
+		JOIN libraries l ON l.id = b.library_id
+		WHERE b.deleted = 0 AND `+availableBook+outerScope+`
+		ORDER BY m.rank, b.lib_rate DESC, b.id`, args...)
 }
 
-func (s *Store) SearchAuthors(ctx context.Context, query string, limit int) ([]AuthorEntry, error) {
+func (s *Store) SearchAuthors(ctx context.Context, query string, limit int, libraryIDs ...string) ([]AuthorEntry, error) {
 	q := ftsQuery(query, "")
 	if q == "" {
 		return nil, nil
 	}
+	libraryID := scopeLibraryID(libraryIDs)
+	countWhere, countArgs := addLibraryScope(`b.deleted = 0 AND `+availableBook, "b", libraryID, nil)
+	args := append([]any{}, countArgs...)
+	args = append(args, q)
+	whereScope := ""
+	if libraryID != "" {
+		whereScope = ` AND EXISTS (SELECT 1 FROM book_authors ba JOIN books b ON b.id = ba.book_id
+			WHERE ba.author_id = a.id AND b.deleted = 0 AND ` + countWhere + `)`
+		args = append(args, libraryID)
+	}
+	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT a.id,
 		       trim(a.last_name || ' ' || a.first_name || ' ' || a.middle_name),
 		       (SELECT count(*) FROM book_authors ba JOIN books b ON b.id = ba.book_id
-		        WHERE ba.author_id = a.id AND b.deleted = 0 AND `+availableBook+`)
+		        WHERE ba.author_id = a.id AND `+countWhere+`)
 		FROM authors a
 		WHERE a.id IN (SELECT rowid FROM authors_search WHERE authors_search MATCH ?)
+		`+whereScope+`
 		ORDER BY a.last_name, a.first_name
-		LIMIT ?`, q, limit)
+		LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -255,19 +309,31 @@ func (s *Store) SearchAuthors(ctx context.Context, query string, limit int) ([]A
 	return out, rows.Err()
 }
 
-func (s *Store) SearchSeries(ctx context.Context, query string, limit int) ([]SeriesEntry, error) {
+func (s *Store) SearchSeries(ctx context.Context, query string, limit int, libraryIDs ...string) ([]SeriesEntry, error) {
 	q := ftsQuery(query, "")
 	if q == "" {
 		return nil, nil
 	}
+	libraryID := scopeLibraryID(libraryIDs)
+	countWhere, countArgs := addLibraryScope(`b.deleted = 0 AND `+availableBook, "b", libraryID, nil)
+	args := append([]any{}, countArgs...)
+	args = append(args, q)
+	whereScope := ""
+	if libraryID != "" {
+		whereScope = ` AND EXISTS (SELECT 1 FROM book_series bs JOIN books b ON b.id = bs.book_id
+			WHERE bs.series_id = s.id AND b.deleted = 0 AND ` + countWhere + `)`
+		args = append(args, libraryID)
+	}
+	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id, s.title,
 		       (SELECT count(*) FROM book_series bs JOIN books b ON b.id = bs.book_id
-		         WHERE bs.series_id = s.id AND b.deleted = 0 AND `+availableBook+`)
+		         WHERE bs.series_id = s.id AND `+countWhere+`)
 		FROM series s
 		WHERE s.id IN (SELECT rowid FROM series_search WHERE series_search MATCH ?)
+		`+whereScope+`
 		ORDER BY s.title
-		LIMIT ?`, q, limit)
+		LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +350,7 @@ func (s *Store) SearchSeries(ctx context.Context, query string, limit int) ([]Se
 	return out, rows.Err()
 }
 
-func (s *Store) AuthorBooks(ctx context.Context, authorID int64) ([]Book, string, error) {
+func (s *Store) AuthorBooks(ctx context.Context, authorID int64, libraryIDs ...string) ([]Book, string, error) {
 	var name string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT trim(last_name || ' ' || first_name || ' ' || middle_name) FROM authors WHERE id = ?`,
@@ -295,13 +361,13 @@ func (s *Store) AuthorBooks(ctx context.Context, authorID int64) ([]Book, string
 	if err != nil {
 		return nil, "", err
 	}
-	books, err := s.queryBooks(ctx,
-		`b.id IN (SELECT book_id FROM book_authors WHERE author_id = ?)`,
-		`coalesce(s.title, ''), b.series_num, b.title`, 0, 0, authorID)
+	where, args := addLibraryScope(`b.id IN (SELECT book_id FROM book_authors WHERE author_id = ?)`, "b", scopeLibraryID(libraryIDs), []any{authorID})
+	books, err := s.queryBooks(ctx, where,
+		`coalesce(s.title, ''), b.series_num, b.title`, 0, 0, args...)
 	return books, name, err
 }
 
-func (s *Store) SeriesBooks(ctx context.Context, seriesID int64) ([]Book, string, error) {
+func (s *Store) SeriesBooks(ctx context.Context, seriesID int64, libraryIDs ...string) ([]Book, string, error) {
 	var title string
 	err := s.db.QueryRowContext(ctx, `SELECT title FROM series WHERE id = ?`, seriesID).Scan(&title)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -310,9 +376,11 @@ func (s *Store) SeriesBooks(ctx context.Context, seriesID int64) ([]Book, string
 	if err != nil {
 		return nil, "", err
 	}
-	books, err := s.scanBooks(ctx, `SELECT`+bookIdentityColumns+`s.title, bs.series_num,`+bookMetadataColumns+`
-        FROM book_series bs JOIN books b ON b.id = bs.book_id JOIN series s ON s.id = bs.series_id
-	        WHERE bs.series_id = ? AND b.deleted = 0 AND `+availableBook+` ORDER BY bs.series_num, b.title`, seriesID)
+	where, args := addLibraryScope(`bs.series_id = ? AND b.deleted = 0 AND `+availableBook, "b", scopeLibraryID(libraryIDs), []any{seriesID})
+	books, err := s.scanBooks(ctx, `SELECT`+bookIdentityColumns+`s.title, bs.series_num,`+bookMetadataColumns+`,
+		b.library_id, l.name, (b.missing = 0 AND l.enabled = 1)
+        FROM book_series bs JOIN books b ON b.id = bs.book_id JOIN series s ON s.id = bs.series_id JOIN libraries l ON l.id=b.library_id
+	        WHERE `+where+` ORDER BY bs.series_num, b.title`, args...)
 	return books, title, err
 }
 
@@ -338,10 +406,11 @@ func shelfWhere(shelfID string) (where, order string, ok bool) {
 	return "", "", false
 }
 
-func (s *Store) HomeShelves(ctx context.Context, limit int) ([]Shelf, error) {
+func (s *Store) HomeShelves(ctx context.Context, limit int, libraryIDs ...string) ([]Shelf, error) {
 	var shelves []Shelf
+	libraryID := scopeLibraryID(libraryIDs)
 	for _, id := range []string{"newest", "top_rated", "well_curated"} {
-		books, _, err := s.ShelfBooks(ctx, id, limit, 0)
+		books, _, err := s.ShelfBooks(ctx, id, limit, 0, libraryID)
 		if err != nil {
 			return nil, err
 		}
@@ -352,7 +421,8 @@ func (s *Store) HomeShelves(ctx context.Context, limit int) ([]Shelf, error) {
 
 // ShelfBooks returns a page of a built-in ("newest"...) or genre
 // ("genre_<code>") shelf.
-func (s *Store) ShelfBooks(ctx context.Context, shelfID string, limit, offset int) ([]Book, string, error) {
+func (s *Store) ShelfBooks(ctx context.Context, shelfID string, limit, offset int, libraryIDs ...string) ([]Book, string, error) {
+	libraryID := scopeLibraryID(libraryIDs)
 	if code, isGenre := strings.CutPrefix(shelfID, "genre_"); isGenre {
 		var genreID int64
 		var title string
@@ -364,9 +434,8 @@ func (s *Store) ShelfBooks(ctx context.Context, shelfID string, limit, offset in
 		if err != nil {
 			return nil, "", err
 		}
-		books, err := s.queryBooks(ctx,
-			`b.id IN (SELECT book_id FROM book_genres WHERE genre_id = ?)`,
-			`b.id`, limit, offset, genreID)
+		where, args := addLibraryScope(`b.id IN (SELECT book_id FROM book_genres WHERE genre_id = ?)`, "b", libraryID, []any{genreID})
+		books, err := s.queryBooks(ctx, where, `b.id`, limit, offset, args...)
 		return books, title, err
 	}
 
@@ -374,19 +443,28 @@ func (s *Store) ShelfBooks(ctx context.Context, shelfID string, limit, offset in
 	if !ok {
 		return nil, "", ErrNotFound
 	}
-	books, err := s.queryBooks(ctx, where, order, limit, offset)
+	where, args := addLibraryScope(where, "b", libraryID, nil)
+	books, err := s.queryBooks(ctx, where, order, limit, offset, args...)
 	return books, "", err
 }
 
 // CatalogShelves returns random genre selections for the catalog page.
-func (s *Store) CatalogShelves(ctx context.Context, count, limit int) ([]Shelf, error) {
+func (s *Store) CatalogShelves(ctx context.Context, count, limit int, libraryIDs ...string) ([]Shelf, error) {
+	libraryID := scopeLibraryID(libraryIDs)
+	genreScope := ""
+	genreArgs := []any{}
+	if libraryID != "" {
+		genreScope = ` AND b.library_id = ?`
+		genreArgs = append(genreArgs, libraryID)
+	}
+	genreArgs = append(genreArgs, count)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT g.id, g.code, coalesce(nullif(g.name, ''), g.code)
 		FROM genres g
 		WHERE EXISTS (SELECT 1 FROM book_genres bg JOIN books b ON b.id = bg.book_id
-		              WHERE bg.genre_id = g.id AND b.deleted = 0 AND `+availableBook+`)
+		              WHERE bg.genre_id = g.id AND b.deleted = 0 AND `+availableBook+genreScope+`)
 		ORDER BY random()
-		LIMIT ?`, count)
+		LIMIT ?`, genreArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -411,11 +489,18 @@ func (s *Store) CatalogShelves(ctx context.Context, count, limit int) ([]Shelf, 
 
 	var shelves []Shelf
 	for _, g := range picked {
-		books, err := s.queryBooks(ctx,
-			`b.id IN (SELECT bg.book_id FROM book_genres bg JOIN books lb ON lb.id = bg.book_id AND lb.deleted = 0
+		where := `b.id IN (SELECT bg.book_id FROM book_genres bg JOIN books lb ON lb.id = bg.book_id AND lb.deleted = 0
 			          AND lb.missing = 0 AND EXISTS (SELECT 1 FROM libraries l WHERE l.id = lb.library_id AND l.enabled = 1)
-			          WHERE bg.genre_id = ? ORDER BY random() LIMIT ?)`,
-			`b.title`, 0, 0, g.id, limit)
+		          WHERE bg.genre_id = ?`
+		args := []any{g.id}
+		if libraryID != "" {
+			where += ` AND lb.library_id = ?`
+			args = append(args, libraryID)
+		}
+		where += ` ORDER BY random() LIMIT ?)`
+		args = append(args, limit)
+		where, args = addLibraryScope(where, "b", libraryID, args)
+		books, err := s.queryBooks(ctx, where, `b.title`, 0, 0, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -440,14 +525,16 @@ type GenreCount struct {
 }
 
 // GenresWithCounts returns genres that have live (non-deleted) books.
-func (s *Store) GenresWithCounts(ctx context.Context) ([]GenreCount, error) {
+func (s *Store) GenresWithCounts(ctx context.Context, libraryIDs ...string) ([]GenreCount, error) {
+	libraryID := scopeLibraryID(libraryIDs)
+	where, args := addLibraryScope(`b.deleted = 0 AND `+availableBook, "b", libraryID, nil)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT g.code, count(*)
 		FROM genres g
 		JOIN book_genres bg ON bg.genre_id = g.id
-		JOIN books b ON b.id = bg.book_id AND b.deleted = 0 AND `+availableBook+`
+		JOIN books b ON b.id = bg.book_id AND `+where+`
 		GROUP BY g.id
-		HAVING count(*) > 0`)
+		HAVING count(*) > 0`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -466,12 +553,12 @@ func (s *Store) GenresWithCounts(ctx context.Context) ([]GenreCount, error) {
 
 // SearchBooks searches across all fields (title, authors, series)
 // with pagination, for the OPDS catalog.
-func (s *Store) SearchBooks(ctx context.Context, query string, limit, offset int) ([]Book, error) {
+func (s *Store) SearchBooks(ctx context.Context, query string, limit, offset int, libraryIDs ...string) ([]Book, error) {
 	q := ftsQuery(query, "")
 	if q == "" {
 		return nil, nil
 	}
-	return s.rankedSearch(ctx, q, limit, offset)
+	return s.rankedSearch(ctx, q, limit, offset, scopeLibraryID(libraryIDs))
 }
 
 // --- Book card and book file ---
@@ -482,7 +569,8 @@ func (s *Store) BookDetails(ctx context.Context, bookID int64) (*BookDetails, er
 		`SELECT`+bookColumns+`, b.file, f.name`+bookFrom+
 			` JOIN folders f ON f.id = b.folder_id WHERE b.id = ? AND b.deleted = 0 AND `+availableBook, bookID).
 		Scan(&d.ID, &d.Title, &d.AuthorNames, &d.SeriesTitle, &d.SeqNumber,
-			&d.Year, &d.LibRate, &d.Ext, &d.Size, &d.File, &d.Folder)
+			&d.Year, &d.LibRate, &d.Ext, &d.Size, &d.LibraryID, &d.LibraryName,
+			&d.Available, &d.File, &d.Folder)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -568,18 +656,30 @@ func (s *Store) BookFile(ctx context.Context, bookID int64) (*BookFile, error) {
 
 // AuthorsByPrefix lists authors whose last name falls in [lo, hi),
 // ordered by name — for alphabetical OPDS browsing. Uses idx_authors_name.
-func (s *Store) AuthorsByPrefix(ctx context.Context, lo, hi string, limit, offset int) ([]AuthorEntry, error) {
+func (s *Store) AuthorsByPrefix(ctx context.Context, lo, hi string, limit, offset int, libraryIDs ...string) ([]AuthorEntry, error) {
+	libraryID := scopeLibraryID(libraryIDs)
+	countWhere, countArgs := addLibraryScope(`b.deleted = 0 AND `+availableBook, "b", libraryID, nil)
+	args := append([]any{}, countArgs...)
+	args = append(args, lo, hi)
+	whereScope := ""
+	if libraryID != "" {
+		whereScope = ` AND EXISTS (SELECT 1 FROM book_authors ba JOIN books b ON b.id = ba.book_id
+			WHERE ba.author_id = a.id AND b.deleted = 0 AND ` + countWhere + `)`
+		args = append(args, libraryID)
+	}
+	args = append(args, limit, offset)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT a.id,
 		       trim(a.last_name || ' ' || a.first_name || ' ' || a.middle_name),
 		       (SELECT count(*) FROM book_authors ba JOIN books b ON b.id = ba.book_id
-		        WHERE ba.author_id = a.id AND b.deleted = 0 AND `+availableBook+`)
+		        WHERE ba.author_id = a.id AND `+countWhere+`)
 		FROM authors a
 		WHERE a.last_name >= ? AND a.last_name < ?
 		  AND EXISTS (SELECT 1 FROM book_authors ba JOIN books b ON b.id = ba.book_id
 		              WHERE ba.author_id = a.id AND b.deleted = 0 AND `+availableBook+`)
+		`+whereScope+`
 		ORDER BY a.last_name, a.first_name
-		LIMIT ? OFFSET ?`, lo, hi, limit, offset)
+		LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -596,17 +696,29 @@ func (s *Store) AuthorsByPrefix(ctx context.Context, lo, hi string, limit, offse
 }
 
 // SeriesByPrefix lists series whose title falls in [lo, hi), ordered by title.
-func (s *Store) SeriesByPrefix(ctx context.Context, lo, hi string, limit, offset int) ([]SeriesEntry, error) {
+func (s *Store) SeriesByPrefix(ctx context.Context, lo, hi string, limit, offset int, libraryIDs ...string) ([]SeriesEntry, error) {
+	libraryID := scopeLibraryID(libraryIDs)
+	countWhere, countArgs := addLibraryScope(`b.deleted = 0 AND `+availableBook, "b", libraryID, nil)
+	args := append([]any{}, countArgs...)
+	args = append(args, lo, hi)
+	whereScope := ""
+	if libraryID != "" {
+		whereScope = ` AND EXISTS (SELECT 1 FROM book_series bs JOIN books b ON b.id = bs.book_id
+			WHERE bs.series_id = s.id AND b.deleted = 0 AND ` + countWhere + `)`
+		args = append(args, libraryID)
+	}
+	args = append(args, limit, offset)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id, s.title,
 		       (SELECT count(*) FROM book_series bs JOIN books b ON b.id = bs.book_id
-                 WHERE bs.series_id = s.id AND b.deleted = 0 AND `+availableBook+`)
+	                 WHERE bs.series_id = s.id AND `+countWhere+`)
 		FROM series s
 		WHERE s.title >= ? AND s.title < ?
 		  AND EXISTS (SELECT 1 FROM book_series bs JOIN books b ON b.id = bs.book_id
 		              WHERE bs.series_id = s.id AND b.deleted = 0 AND `+availableBook+`)
+		`+whereScope+`
 		ORDER BY s.title
-		LIMIT ? OFFSET ?`, lo, hi, limit, offset)
+		LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, err
 	}

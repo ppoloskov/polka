@@ -94,3 +94,20 @@ Management API reviewed: saved-source manual updates, rename/enable, protected
 pathless list, existing status plus target/diff counters. Review fixed silent
 legacy-update success and stale genre counts. Isolated focused suites/vet pass
 in management-preview; exact full validation remains required after commit.
+
+PR layout correction: obsolete staging PR #5 closed; replacement #8 uses exact
+`254d42f` on dedicated inpx-source branch, followed by folder #6 and adapters #7.
+Management API PR #9 exact `e8d15a9` passed full Go tests/vet/both builds in pr9.
+Always verify branch names against open PR heads before pushing a new package.
+Catalog scope and OPDS changes are separate; admin UI is in progress. New
+management controls use the existing admin screen; no additional CLI management
+command is needed in v1. Old import CLI behavior remains validated.
+
+Catalog scope package reviewed and isolated store/server suites/vet passed in
+catalog-preview. Optional libraryId applies before catalog pagination, including
+large FTS search, recommendations and themed collections. Source fields are
+appended consistently to Book scans, including SeriesBooks and BookDetails.
+Personal lookup is distinct from ordinary available-only lookup; scoped home
+reading/wishlist resolve owner before their limit, with regressions beyond32
+foreign references. Book-ID ordering helper is shared rather than duplicated.
+OPDS and admin UI remain separate pending changes; exclude them from this commit.
