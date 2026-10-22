@@ -49,12 +49,12 @@ func (c *readerCache) put(id int64, text *library.FB2Text) {
 
 // bookText returns the parsed book (from the cache or from disk).
 func (s *Server) bookText(r *http.Request, bookID int64) (*library.FB2Text, error) {
-	if text := s.reader.get(bookID); text != nil {
-		return text, nil
-	}
 	f, err := s.st.BookFile(r.Context(), bookID)
 	if err != nil {
 		return nil, err
+	}
+	if text := s.reader.get(bookID); text != nil {
+		return text, nil
 	}
 	lib, err := s.bookLibrary(r.Context(), bookID)
 	if err != nil {

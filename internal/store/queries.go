@@ -81,9 +81,10 @@ const bookColumns = bookIdentityColumns + `
 ` + bookMetadataColumns
 
 const bookFrom = ` FROM books b LEFT JOIN series s ON s.id = b.series_id`
+const availableBook = `b.missing = 0 AND EXISTS (SELECT 1 FROM libraries l WHERE l.id = b.library_id AND l.enabled = 1)`
 
 func (s *Store) queryBooks(ctx context.Context, where string, order string, limit, offset int, args ...any) ([]Book, error) {
-	q := `SELECT` + bookColumns + bookFrom + ` WHERE b.deleted = 0`
+	q := `SELECT` + bookColumns + bookFrom + ` WHERE b.deleted = 0 AND ` + availableBook
 	if where != "" {
 		q += ` AND ` + where
 	}
@@ -165,16 +166,23 @@ func (s *Store) SearchStats(ctx context.Context, query string) (SearchStats, err
 	if plainQ == "" {
 		return st, nil
 	}
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT count(*) FROM book_search WHERE book_search MATCH ?`, titleQ).Scan(&st.BookTitles); err != nil {
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT count(*) FROM book_search bs JOIN books b ON b.id = bs.rowid
+		WHERE book_search MATCH ? AND b.deleted = 0 AND `+availableBook, titleQ).Scan(&st.BookTitles); err != nil {
 		return st, err
 	}
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT count(*) FROM authors_search WHERE authors_search MATCH ?`, plainQ).Scan(&st.Authors); err != nil {
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT count(*) FROM authors_search a
+		WHERE authors_search MATCH ? AND EXISTS (
+			SELECT 1 FROM book_authors ba JOIN books b ON b.id = ba.book_id
+			WHERE ba.author_id = a.rowid AND b.deleted = 0 AND `+availableBook+`)`, plainQ).Scan(&st.Authors); err != nil {
 		return st, err
 	}
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT count(*) FROM series_search WHERE series_search MATCH ?`, plainQ).Scan(&st.BookSeries); err != nil {
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT count(*) FROM series_search ss
+		WHERE series_search MATCH ? AND EXISTS (
+			SELECT 1 FROM book_series bs JOIN books b ON b.id = bs.book_id
+			WHERE bs.series_id = ss.rowid AND b.deleted = 0 AND `+availableBook+`)`, plainQ).Scan(&st.BookSeries); err != nil {
 		return st, err
 	}
 	return st, nil
@@ -201,17 +209,19 @@ func (s *Store) rankedSearch(ctx context.Context, ftsQ string, limit, offset int
 	}
 	if matches > 5000 {
 		return s.scanBooks(ctx, `SELECT`+bookColumns+`
-			FROM (SELECT rowid FROM book_search WHERE book_search MATCH ? LIMIT ? OFFSET ?) m
+			FROM (SELECT book_search.rowid FROM book_search JOIN books b ON b.id = book_search.rowid
+			      WHERE book_search MATCH ? AND b.deleted = 0 AND `+availableBook+` LIMIT ? OFFSET ?) m
 			JOIN books b ON b.id = m.rowid
 			LEFT JOIN series s ON s.id = b.series_id
-			WHERE b.deleted = 0
+			WHERE b.deleted = 0 AND `+availableBook+`
 			ORDER BY b.lib_rate DESC, b.title`, ftsQ, limit, offset)
 	}
 	return s.scanBooks(ctx, `SELECT`+bookColumns+`
-		FROM (SELECT rowid, rank FROM book_search WHERE book_search MATCH ? ORDER BY rank LIMIT ? OFFSET ?) m
+		FROM (SELECT book_search.rowid, rank FROM book_search JOIN books b ON b.id = book_search.rowid
+		      WHERE book_search MATCH ? AND b.deleted = 0 AND `+availableBook+` ORDER BY rank LIMIT ? OFFSET ?) m
 		JOIN books b ON b.id = m.rowid
 		LEFT JOIN series s ON s.id = b.series_id
-		WHERE b.deleted = 0
+		WHERE b.deleted = 0 AND `+availableBook+`
 		ORDER BY m.rank, b.lib_rate DESC, b.id`, ftsQ, limit, offset)
 }
 
@@ -224,7 +234,7 @@ func (s *Store) SearchAuthors(ctx context.Context, query string, limit int) ([]A
 		SELECT a.id,
 		       trim(a.last_name || ' ' || a.first_name || ' ' || a.middle_name),
 		       (SELECT count(*) FROM book_authors ba JOIN books b ON b.id = ba.book_id
-		        WHERE ba.author_id = a.id AND b.deleted = 0)
+		        WHERE ba.author_id = a.id AND b.deleted = 0 AND `+availableBook+`)
 		FROM authors a
 		WHERE a.id IN (SELECT rowid FROM authors_search WHERE authors_search MATCH ?)
 		ORDER BY a.last_name, a.first_name
@@ -253,7 +263,7 @@ func (s *Store) SearchSeries(ctx context.Context, query string, limit int) ([]Se
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id, s.title,
 		       (SELECT count(*) FROM book_series bs JOIN books b ON b.id = bs.book_id
-                 WHERE bs.series_id = s.id AND b.deleted = 0)
+		         WHERE bs.series_id = s.id AND b.deleted = 0 AND `+availableBook+`)
 		FROM series s
 		WHERE s.id IN (SELECT rowid FROM series_search WHERE series_search MATCH ?)
 		ORDER BY s.title
@@ -302,7 +312,7 @@ func (s *Store) SeriesBooks(ctx context.Context, seriesID int64) ([]Book, string
 	}
 	books, err := s.scanBooks(ctx, `SELECT`+bookIdentityColumns+`s.title, bs.series_num,`+bookMetadataColumns+`
         FROM book_series bs JOIN books b ON b.id = bs.book_id JOIN series s ON s.id = bs.series_id
-        WHERE bs.series_id = ? AND b.deleted = 0 ORDER BY bs.series_num, b.title`, seriesID)
+	        WHERE bs.series_id = ? AND b.deleted = 0 AND `+availableBook+` ORDER BY bs.series_num, b.title`, seriesID)
 	return books, title, err
 }
 
@@ -373,7 +383,8 @@ func (s *Store) CatalogShelves(ctx context.Context, count, limit int) ([]Shelf, 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT g.id, g.code, coalesce(nullif(g.name, ''), g.code)
 		FROM genres g
-		WHERE EXISTS (SELECT 1 FROM book_genres bg WHERE bg.genre_id = g.id)
+		WHERE EXISTS (SELECT 1 FROM book_genres bg JOIN books b ON b.id = bg.book_id
+		              WHERE bg.genre_id = g.id AND b.deleted = 0 AND `+availableBook+`)
 		ORDER BY random()
 		LIMIT ?`, count)
 	if err != nil {
@@ -402,6 +413,7 @@ func (s *Store) CatalogShelves(ctx context.Context, count, limit int) ([]Shelf, 
 	for _, g := range picked {
 		books, err := s.queryBooks(ctx,
 			`b.id IN (SELECT bg.book_id FROM book_genres bg JOIN books lb ON lb.id = bg.book_id AND lb.deleted = 0
+			          AND lb.missing = 0 AND EXISTS (SELECT 1 FROM libraries l WHERE l.id = lb.library_id AND l.enabled = 1)
 			          WHERE bg.genre_id = ? ORDER BY random() LIMIT ?)`,
 			`b.title`, 0, 0, g.id, limit)
 		if err != nil {
@@ -433,7 +445,7 @@ func (s *Store) GenresWithCounts(ctx context.Context) ([]GenreCount, error) {
 		SELECT g.code, count(*)
 		FROM genres g
 		JOIN book_genres bg ON bg.genre_id = g.id
-		JOIN books b ON b.id = bg.book_id AND b.deleted = 0
+		JOIN books b ON b.id = bg.book_id AND b.deleted = 0 AND `+availableBook+`
 		GROUP BY g.id
 		HAVING count(*) > 0`)
 	if err != nil {
@@ -468,7 +480,7 @@ func (s *Store) BookDetails(ctx context.Context, bookID int64) (*BookDetails, er
 	d := &BookDetails{}
 	err := s.db.QueryRowContext(ctx,
 		`SELECT`+bookColumns+`, b.file, f.name`+bookFrom+
-			` JOIN folders f ON f.id = b.folder_id WHERE b.id = ? AND b.deleted = 0`, bookID).
+			` JOIN folders f ON f.id = b.folder_id WHERE b.id = ? AND b.deleted = 0 AND `+availableBook, bookID).
 		Scan(&d.ID, &d.Title, &d.AuthorNames, &d.SeriesTitle, &d.SeqNumber,
 			&d.Year, &d.LibRate, &d.Ext, &d.Size, &d.File, &d.Folder)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -524,7 +536,7 @@ func (s *Store) BookDetails(ctx context.Context, bookID int64) (*BookDetails, er
 func (s *Store) SampleFolders(ctx context.Context, limit int) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT name FROM folders
-		WHERE id IN (SELECT folder_id FROM books WHERE deleted = 0)
+		WHERE id IN (SELECT folder_id FROM books b WHERE deleted = 0 AND `+availableBook+`)
 		LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -546,7 +558,7 @@ func (s *Store) BookFile(ctx context.Context, bookID int64) (*BookFile, error) {
 	err := s.db.QueryRowContext(ctx, `
 		SELECT b.id, b.title, fo.name, b.file, b.ext, b.size
 		FROM books b JOIN folders fo ON fo.id = b.folder_id
-		WHERE b.id = ? AND b.deleted = 0`, bookID).
+		WHERE b.id = ? AND b.deleted = 0 AND `+availableBook, bookID).
 		Scan(&f.ID, &f.Title, &f.Folder, &f.File, &f.Ext, &f.Size)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -561,9 +573,11 @@ func (s *Store) AuthorsByPrefix(ctx context.Context, lo, hi string, limit, offse
 		SELECT a.id,
 		       trim(a.last_name || ' ' || a.first_name || ' ' || a.middle_name),
 		       (SELECT count(*) FROM book_authors ba JOIN books b ON b.id = ba.book_id
-		        WHERE ba.author_id = a.id AND b.deleted = 0)
+		        WHERE ba.author_id = a.id AND b.deleted = 0 AND `+availableBook+`)
 		FROM authors a
 		WHERE a.last_name >= ? AND a.last_name < ?
+		  AND EXISTS (SELECT 1 FROM book_authors ba JOIN books b ON b.id = ba.book_id
+		              WHERE ba.author_id = a.id AND b.deleted = 0 AND `+availableBook+`)
 		ORDER BY a.last_name, a.first_name
 		LIMIT ? OFFSET ?`, lo, hi, limit, offset)
 	if err != nil {
@@ -586,9 +600,11 @@ func (s *Store) SeriesByPrefix(ctx context.Context, lo, hi string, limit, offset
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id, s.title,
 		       (SELECT count(*) FROM book_series bs JOIN books b ON b.id = bs.book_id
-                 WHERE bs.series_id = s.id AND b.deleted = 0)
+                 WHERE bs.series_id = s.id AND b.deleted = 0 AND `+availableBook+`)
 		FROM series s
 		WHERE s.title >= ? AND s.title < ?
+		  AND EXISTS (SELECT 1 FROM book_series bs JOIN books b ON b.id = bs.book_id
+		              WHERE bs.series_id = s.id AND b.deleted = 0 AND `+availableBook+`)
 		ORDER BY s.title
 		LIMIT ? OFFSET ?`, lo, hi, limit, offset)
 	if err != nil {

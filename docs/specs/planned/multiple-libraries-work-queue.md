@@ -12,8 +12,9 @@ architect reviews scope/style/behavior before Git publication.
 | WP1 | Automatic additive default-library migration, registry, durable allocator shared by existing insert paths, reserve known auth refs before startup/import; newer-schema rejection. No source scans or changed public routes. | None | v5/v1/fresh/reopen, row/relation/deletion preservation, Clear/reopen/import/upload allocation | Exact commit validated; publishing |
 | WP2 | Resolve each book's owning root across all serving paths while preserving dynamic legacy root and uploads | WP1 | same config/root changes, two roots with same locator, reader/download/cover/export/email, existing suites | Reviewed; HTTP/server/library tests pass; exact-commit verification next |
 | WP3 | Disk-backed snapshot staging and atomic target-only publication; missing separate from admin deleted; preserve personal state and other libraries | WP1 | diff/idempotence/remove/reappear/admin hidden, rollback/error/cancel/restart, no global search/index clearing | Reviewed; focused tests/vet pass; exact-commit validation next |
-| WP3b | Availability filtering before exposing update entrypoints; missing/disabled excluded from normal counts, browsing, files and cached chapters | WP2, WP3 | missing/disabled counts/search/author/series/file/recommendations, reader-cache removal and restore | Test writing |
-| WP4 | INPX saved-source updater and existing CLI/web import adapters over same engine | WP2, WP3 | strict parse/completeness/key policy, source path/upload/default target, failure/retry/empty approval, unchanged old contracts | Pending |
+| WP3b | Availability filtering before exposing update entrypoints; missing/disabled excluded from normal counts, browsing, files and cached chapters | WP2, WP3 | missing/disabled counts/search/author/series/file/recommendations, reader-cache removal and restore | Reviewed; focused suites pass; exact-commit validation next |
+| WP4a | Strict complete INPX staging and exact immutable record keys | WP3 | owned-copy stability, same/changed/source-deleted records, malformed/duplicate/corrupt input | Reviewed; tests/vet pass; separate commit next |
+| WP4b | Saved-source updater and legacy CLI/web import adapters over same engine | WP3b, WP4a | path/upload/default target, failed replace preserves data, empty guard, unchanged old contracts | Test writing |
 | WP5 | Recursive folder adapter, full-byte hashes, existing metadata parsers/fallback | WP2, WP3 | recursive add/change/remove, duplicate copies, symlinks/traversal/unreadable/unstable inputs, realistic source tree | Pending |
 | WP6 | Admin libraries UI/API/CLI, combined browsing/filter/source badges and unavailable personal entries | WP4, WP5 | admin authorization/demo/connected proxy, counts/pagination/filter/bulk, existing UI tests/build and real HTTP workflows | Pending |
 | WP7 | Upgrade/restart and end-to-end acceptance, final compatibility cleanup/docs | All | previous-version data and unchanged config/clients; both source types; source failure; repeated updates; full Go/Node/build/vet; actual container proof where available | Pending |
@@ -95,3 +96,12 @@ cancelled input, and mid-insert rollback of rows/search/allocation floor. Review
 removed mutable-record comparison machinery and redundant relation helpers;
 one existing insert path is reused inside the publication transaction. Full
 store validation will use the committed tree without pending availability tests.
+
+Published [snapshot PR #3](https://github.com/ppoloskov/polka/pull/3), exact
+`2a678ef`: full Go tests/vet/server+desktop builds pass in an isolated archive.
+WP3b normal book queries/counts/recommendations/files exclude missing/disabled
+books; reader cache checks availability before returning cached chapters. Review
+caught and fixed filtering after search LIMIT/OFFSET; hidden matches cannot
+consume a visible result page. Admin restore cannot reindex missing books.
+Dictionary listings retain the original zero-book entry behavior, with visible
+book counts. Store/library/server suites pass; exact-tree checks are next.

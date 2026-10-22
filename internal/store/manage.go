@@ -174,7 +174,8 @@ func (s *Store) SetBookDeleted(ctx context.Context, bookID int64, deleted bool) 
 		                 WHERE ba.book_id = b.id), ''),
 		       coalesce((SELECT group_concat(s.title, ' ') FROM book_series bs JOIN series s ON s.id = bs.series_id
                           WHERE bs.book_id = b.id), '')
-		FROM books b WHERE b.id = ?`, bookID)
+		FROM books b JOIN libraries l ON l.id = b.library_id
+		WHERE b.id = ? AND b.missing = 0 AND l.enabled = 1`, bookID)
 	return err
 }
 
@@ -329,7 +330,9 @@ func (s *Store) BookFilesByIDs(ctx context.Context, ids []int64) ([]BookFile, er
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT b.id, b.title, fo.name, b.file, b.ext, b.size
 		FROM books b JOIN folders fo ON fo.id = b.folder_id
-		WHERE b.deleted = 0 AND b.id IN (`+placeholders+`)`, args...)
+		WHERE b.deleted = 0 AND b.missing = 0
+		  AND EXISTS (SELECT 1 FROM libraries l WHERE l.id = b.library_id AND l.enabled = 1)
+		  AND b.id IN (`+placeholders+`)`, args...)
 	if err != nil {
 		return nil, err
 	}

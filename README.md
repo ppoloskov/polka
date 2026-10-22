@@ -132,6 +132,8 @@ The foundation preserves existing catalog IDs and legacy root configuration;
 file serving can also resolve explicitly owned library roots independently.
 An internal disk-backed snapshot publisher stages and atomically applies one
 library's records; source adapters and management controls are still in progress.
+Missing books and disabled libraries are excluded from ordinary book results and
+file serving, while their catalog records and personal references are retained.
 
 Polka understands `.inpx` index files (MyHomeLib / Flibusta format) — both
 from the command line and from the web UI (*Manage → Import*):
