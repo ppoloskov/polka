@@ -9,9 +9,9 @@ architect reviews scope/style/behavior before Git publication.
 
 | Package | Behavior and scope | Dependencies | Required validation | Status |
 | --- | --- | --- | --- | --- |
-| WP1 | Automatic additive default-library migration, registry, durable allocator shared by existing insert paths, reserve known auth refs before startup/import; newer-schema rejection. No source scans or changed public routes. | None | v5/v1/fresh/reopen, row/relation/deletion preservation, Clear/reopen/import/upload allocation | Reviewed; focused tests pass; exact-commit upgrade validation next |
-| WP2 | Resolve each book's owning root across all serving paths while preserving dynamic legacy root and uploads | WP1 | same config/root changes, two roots with same locator, reader/download/cover/export/email, existing suites | Red test confirmed; implementation in progress |
-| WP3 | Disk-backed snapshot staging and atomic target-only publication; missing separate from admin deleted; preserve personal state and other libraries | WP1 | diff/idempotence/remove/reappear/admin hidden, rollback/error/cancel/restart, no global search/index clearing | Pending |
+| WP1 | Automatic additive default-library migration, registry, durable allocator shared by existing insert paths, reserve known auth refs before startup/import; newer-schema rejection. No source scans or changed public routes. | None | v5/v1/fresh/reopen, row/relation/deletion preservation, Clear/reopen/import/upload allocation | Exact commit validated; publishing |
+| WP2 | Resolve each book's owning root across all serving paths while preserving dynamic legacy root and uploads | WP1 | same config/root changes, two roots with same locator, reader/download/cover/export/email, existing suites | Reviewed; HTTP/server/library tests pass; exact-commit verification next |
+| WP3 | Disk-backed snapshot staging and atomic target-only publication; missing separate from admin deleted; preserve personal state and other libraries | WP1 | diff/idempotence/remove/reappear/admin hidden, rollback/error/cancel/restart, no global search/index clearing | Red tests reviewed; implementation in progress |
 | WP4 | INPX saved-source updater and existing CLI/web import adapters over same engine | WP2, WP3 | strict parse/completeness/key policy, source path/upload/default target, failure/retry/empty approval, unchanged old contracts | Pending |
 | WP5 | Recursive folder adapter, full-byte hashes, existing metadata parsers/fallback | WP2, WP3 | recursive add/change/remove, duplicate copies, symlinks/traversal/unreadable/unstable inputs, realistic source tree | Pending |
 | WP6 | Admin libraries UI/API/CLI, combined browsing/filter/source badges and unavailable personal entries | WP4, WP5 | admin authorization/demo/connected proxy, counts/pagination/filter/bulk, existing UI tests/build and real HTTP workflows | Pending |
@@ -67,5 +67,18 @@ Frontend baseline: unchanged lockfile install/build pass; Node 26 needs
 `NODE_OPTIONS=--no-experimental-webstorage` for all 34 tests to pass. No dependency
 or frontend source changes are needed for that environment difference.
 
-Status: implementation authorized; WP1 reviewed, WP2 implementing.
-Next: validate exact WP1 commit and native upgrade, then publish foundation PR.
+WP1 exact commit `3b8006c` passed full Go tests, full vet, and server/desktop
+builds from an isolated archive. Native old-binary -> candidate upgrade retained
+session/login, catalog ID/content, rating, list membership, normal/orphan progress.
+Post-upgrade upload allocated ID101 above orphan ID100 and survived restart;
+one legacy registry entry remained. Positional CLI replacement also reserved
+the orphan reference. Evidence: `/private/tmp/polka-validation/wp1-upgrade-6z3udpof`.
+This proves native data/config compatibility; Docker proof remains outstanding.
+
+WP2 HTTP regression failed on the old global-root 404, then passed after per-book
+resolution. Existing server/library suites pass. Review preserved export's
+skip-missing behavior, unset legacy-root progress saves, and original field
+formatting. No query positional scan or reader protocol changed.
+
+Status: implementation authorized; WP1 publishing, WP2 reviewed, WP3 implementing.
+Next: exact-commit WP2 validation/publication, then snapshot availability work.

@@ -66,6 +66,10 @@ func searchParam(r *http.Request) string {
 }
 
 func (s *Server) apiError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errLibraryDirNotConfigured) {
+		http.Error(w, "library dir is not configured", http.StatusNotFound)
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) || errors.Is(err, library.ErrNoFile) {
 		http.NotFound(w, nil)
 		return
@@ -371,8 +375,8 @@ func (s *Server) handleGetBookForm(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if s.lib != nil {
-		if meta, err := s.lib.Meta(d.Folder, d.File, d.Ext); err == nil {
+	if lib, err := s.bookLibrary(r.Context(), d.ID); err == nil {
+		if meta, err := lib.Meta(d.Folder, d.File, d.Ext); err == nil {
 			resp["annotation"] = meta.AnnotationHTML
 			resp["publisher"] = meta.Publisher
 			resp["city"] = meta.City
@@ -394,6 +398,8 @@ func (s *Server) handleGetBookForm(w http.ResponseWriter, r *http.Request) {
 		} else if !errors.Is(err, library.ErrNoFile) {
 			s.log.Warn("fb2 meta", "book", d.ID, "error", err)
 		}
+	} else if !errors.Is(err, errLibraryDirNotConfigured) && !errors.Is(err, store.ErrNotFound) {
+		s.log.Warn("book library", "book", d.ID, "error", err)
 	}
 	seriesList := make([]map[string]any, 0, len(d.Series))
 	for _, sr := range d.Series {
@@ -409,10 +415,6 @@ func (s *Server) handleGetBookForm(w http.ResponseWriter, r *http.Request) {
 // --- Images/* ---
 
 func (s *Server) bookFileOr404(w http.ResponseWriter, r *http.Request) *store.BookFile {
-	if s.lib == nil {
-		http.Error(w, "library dir is not configured", http.StatusNotFound)
-		return nil
-	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.NotFound(w, r)
@@ -431,7 +433,11 @@ func (s *Server) handleCover(w http.ResponseWriter, r *http.Request) {
 	if f == nil {
 		return
 	}
-	data, mime, err := s.lib.Cover(f.ID, f.Folder, f.File, f.Ext)
+	lib := s.bookLibraryOr404(w, r, f.ID)
+	if lib == nil {
+		return
+	}
+	data, mime, err := lib.Cover(f.ID, f.Folder, f.File, f.Ext)
 	if err != nil {
 		s.log.Info("no cover", "book", f.ID, "folder", f.Folder, "file", f.File, "error", err)
 		s.apiError(w, err)
@@ -450,7 +456,11 @@ func (s *Server) handleBookDownload(w http.ResponseWriter, r *http.Request) {
 	if f == nil {
 		return
 	}
-	rc, size, err := s.lib.Open(f.Folder, f.File, f.Ext)
+	lib := s.bookLibraryOr404(w, r, f.ID)
+	if lib == nil {
+		return
+	}
+	rc, size, err := lib.Open(f.Folder, f.File, f.Ext)
 	if err != nil {
 		s.apiError(w, err)
 		return
@@ -478,7 +488,11 @@ func (s *Server) handleBookZip(w http.ResponseWriter, r *http.Request) {
 	if f == nil {
 		return
 	}
-	rc, _, err := s.lib.Open(f.Folder, f.File, f.Ext)
+	lib := s.bookLibraryOr404(w, r, f.ID)
+	if lib == nil {
+		return
+	}
+	rc, _, err := lib.Open(f.Folder, f.File, f.Ext)
 	if err != nil {
 		s.apiError(w, err)
 		return
@@ -514,11 +528,15 @@ func (s *Server) handleBookCompact(w http.ResponseWriter, r *http.Request) {
 	if f == nil {
 		return
 	}
+	lib := s.bookLibraryOr404(w, r, f.ID)
+	if lib == nil {
+		return
+	}
 	if !strings.EqualFold(f.Ext, "fb2") {
 		http.NotFound(w, r)
 		return
 	}
-	rc, _, err := s.lib.Open(f.Folder, f.File, f.Ext)
+	rc, _, err := lib.Open(f.Folder, f.File, f.Ext)
 	if err != nil {
 		s.apiError(w, err)
 		return

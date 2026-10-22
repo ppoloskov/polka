@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"path/filepath"
+	"sync"
 	"time"
 
 	bundled "github.com/vestigiumincaligne/polka/collections"
@@ -36,6 +37,8 @@ type Server struct {
 	reader  readerCache          // parsed books for online reading
 	basic   basicCache           // verified Basic credentials (OPDS)
 	genres  genreCache           // genre counters for search
+
+	bookLibs sync.Map // root path -> library reader
 
 	loginLimiter *rateLimiter // throttle password guessing
 	guestLimiter *rateLimiter // throttle demo guest creation

@@ -128,6 +128,8 @@ Persistent INPX and recursive folder libraries are being developed as a small
 installations must keep working with unchanged configuration after an image
 upgrade. See the [compatibility contract](docs/specs/architecture/multiple-libraries-compatibility.md)
 for migration and identity boundaries; the complete feature is not yet available.
+The foundation preserves existing catalog IDs and legacy root configuration;
+file serving can also resolve explicitly owned library roots independently.
 
 Polka understands `.inpx` index files (MyHomeLib / Flibusta format) — both
 from the command line and from the web UI (*Manage → Import*):

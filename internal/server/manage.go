@@ -296,10 +296,6 @@ func (s *Server) handleBookSetDeleted(deleted bool) http.HandlerFunc {
 // --- Bulk export ---
 
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
-	if s.lib == nil {
-		http.Error(w, "library dir is not configured", http.StatusNotFound)
-		return
-	}
 	var ids []int64
 	for _, part := range strings.Split(r.URL.Query().Get("ids"), ",") {
 		if id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64); err == nil {
@@ -316,6 +312,26 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		s.apiError(w, err)
 		return
 	}
+	type exportBook struct {
+		file *store.BookFile
+		lib  *library.Library
+	}
+	books := make([]exportBook, 0, len(files))
+	for i := range files {
+		lib, err := s.bookLibrary(r.Context(), files[i].ID)
+		if errors.Is(err, errLibraryDirNotConfigured) || errors.Is(err, library.ErrNoFile) {
+			continue
+		}
+		if err != nil {
+			s.apiError(w, err)
+			return
+		}
+		books = append(books, exportBook{file: &files[i], lib: lib})
+	}
+	if len(books) == 0 && s.lib == nil {
+		http.Error(w, "library dir is not configured", http.StatusNotFound)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="polka-books.zip"`)
@@ -323,8 +339,9 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	zw := zip.NewWriter(w)
 	defer zw.Close()
 	used := map[string]int{}
-	for _, f := range files {
-		rc, _, err := s.lib.Open(f.Folder, f.File, f.Ext)
+	for _, book := range books {
+		f := book.file
+		rc, _, err := book.lib.Open(f.Folder, f.File, f.Ext)
 		if err != nil {
 			s.log.Warn("export: skip missing", "book", f.ID, "error", err)
 			continue
