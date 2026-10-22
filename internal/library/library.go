@@ -22,8 +22,9 @@ var ErrNoFile = errors.New("book file not found")
 type Library struct {
 	root string
 
-	mu     sync.Mutex
-	covers map[int64]coverEntry // bounded cover cache
+	mu              sync.Mutex
+	covers          map[int64]coverEntry // bounded cover cache
+	coverGeneration uint64
 }
 
 type coverEntry struct {
@@ -38,6 +39,18 @@ func New(root string) *Library {
 		return nil
 	}
 	return &Library{root: root, covers: make(map[int64]coverEntry, coverCacheSize)}
+}
+
+// ResetCovers drops cached covers after the catalog changes. A generation
+// check prevents an extraction already in flight from restoring stale data.
+func (l *Library) ResetCovers() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.coverGeneration++
+	l.covers = make(map[int64]coverEntry, coverCacheSize)
+	l.mu.Unlock()
 }
 
 // Health describes the state of the library root: whether it exists and how
@@ -375,16 +388,19 @@ func (l *Library) Cover(bookID int64, folder, file, ext string) ([]byte, string,
 		}
 		return c.data, c.mime, nil
 	}
+	generation := l.coverGeneration
 	l.mu.Unlock()
 
 	data, mime, err := l.extractCover(folder, file, ext)
 
 	l.mu.Lock()
-	if len(l.covers) >= coverCacheSize {
+	if generation == l.coverGeneration && len(l.covers) >= coverCacheSize {
 		// simple eviction: drop the whole cache
 		l.covers = make(map[int64]coverEntry, coverCacheSize)
 	}
-	l.covers[bookID] = coverEntry{data: data, mime: mime}
+	if generation == l.coverGeneration {
+		l.covers[bookID] = coverEntry{data: data, mime: mime}
+	}
 	l.mu.Unlock()
 
 	if err != nil {

@@ -350,6 +350,18 @@ func TestCover(t *testing.T) {
 	}
 }
 
+func TestResetCovers(t *testing.T) {
+	l := New(t.TempDir())
+	l.covers[1] = coverEntry{data: []byte("old cover"), mime: "image/jpeg"}
+	l.covers[2] = coverEntry{}
+	l.ResetCovers()
+	if len(l.covers) != 0 {
+		t.Fatalf("cover cache size after reset = %d, want 0", len(l.covers))
+	}
+	var nilLibrary *Library
+	nilLibrary.ResetCovers()
+}
+
 func TestSniffImageMime(t *testing.T) {
 	cases := map[string]string{
 		"\xFF\xD8\xFF\xE0....":                     "image/jpeg",

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/vestigiumincaligne/polka/internal/auth"
 	"github.com/vestigiumincaligne/polka/internal/config"
@@ -62,6 +63,32 @@ func newManageServerDir(t *testing.T) (*httptest.Server, *http.Client, *store.St
 	resp := postJSON(t, client, ts.URL+"/auth/login", map[string]string{"login": "admin", "password": "secret123"})
 	resp.Body.Close()
 	return ts, client, st, dir
+}
+
+func waitForImport(t *testing.T, client *http.Client, url string) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var status map[string]any
+		err = json.NewDecoder(resp.Body).Decode(&status)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status["running"] == false {
+			if status["phase"] != "done" {
+				t.Fatalf("import failed: %v", status)
+			}
+			return status
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("import did not finish within 5s")
+	return nil
 }
 
 func uploadFiles(t *testing.T, client *http.Client, url string, files map[string][]byte, fields map[string]string) *http.Response {
@@ -189,25 +216,9 @@ func TestWebImportInpx(t *testing.T) {
 		t.Fatalf("import start -> %d", resp.StatusCode)
 	}
 
-	// Wait for the background import to finish
-	deadline := 100
-	for ; deadline > 0; deadline-- {
-		var status map[string]any
-		resp, _ := client.Get(ts.URL + "/admin/import/status")
-		json.NewDecoder(resp.Body).Decode(&status)
-		resp.Body.Close()
-		if status["running"] == false {
-			if status["phase"] != "done" {
-				t.Fatalf("import failed: %v", status)
-			}
-			if status["books"].(float64) != 1 {
-				t.Errorf("imported books = %v", status["books"])
-			}
-			break
-		}
-	}
-	if deadline == 0 {
-		t.Fatal("import did not finish")
+	status := waitForImport(t, client, ts.URL+"/admin/import/status")
+	if status["books"].(float64) != 1 {
+		t.Errorf("imported books = %v", status["books"])
 	}
 
 	var stats map[string]map[string]int
@@ -263,21 +274,7 @@ func TestWebImportInpxFromPath(t *testing.T) {
 		t.Fatalf("path import start -> %d", code)
 	}
 
-	for deadline := 100; deadline > 0; deadline-- {
-		var status map[string]any
-		resp, _ := client.Get(ts.URL + "/admin/import/status")
-		json.NewDecoder(resp.Body).Decode(&status)
-		resp.Body.Close()
-		if status["running"] == false {
-			if status["phase"] != "done" {
-				t.Fatalf("path import failed: %v", status)
-			}
-			break
-		}
-		if deadline == 1 {
-			t.Fatal("path import did not finish")
-		}
-	}
+	waitForImport(t, client, ts.URL+"/admin/import/status")
 
 	if _, err := os.Stat(inpxPath); err != nil {
 		t.Errorf("server-path inpx was removed: %v", err)
