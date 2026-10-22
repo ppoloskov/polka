@@ -429,6 +429,9 @@ func (s *Server) runImport(inpxPath, sourceName string, cleanup bool) {
 	ctx := context.Background()
 
 	update, stats, err := importer.UpdateInpx(ctx, s.log, s.st, "legacy", inpxPath, s.cfg.DataDir, sourceName, s.importProgress(), false)
+	if err == nil {
+		s.mergeBookRefs(ctx, update)
+	}
 	if err == nil && s.lib != nil {
 		s.lib.ResetCovers()
 	}
@@ -489,6 +492,20 @@ func (s *Server) finishImport(update store.UpdateStats, stats store.ImportStats,
 	s.imp.phase = "done"
 	s.imp.update = update
 	s.imp.stats = stats
+}
+
+// mergeBookRefs moves personal state from consolidated per-series rows onto
+// the kept books after a successful publish. The catalog update is already
+// committed, so a merge failure is logged but never fails the update.
+func (s *Server) mergeBookRefs(ctx context.Context, update store.UpdateStats) {
+	if len(update.ConsolidatedIDs) == 0 {
+		return
+	}
+	if err := s.users.MergeBookRefs(ctx, update.ConsolidatedIDs); err != nil {
+		s.log.Error("merge consolidated book references", "count", len(update.ConsolidatedIDs), "error", err)
+		return
+	}
+	s.log.Info("merged consolidated book references", "count", len(update.ConsolidatedIDs))
 }
 
 // warnIfArchivesMissing checks, on a sample of catalog folders, that the

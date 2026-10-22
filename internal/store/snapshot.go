@@ -20,6 +20,7 @@ type Snapshot struct {
 	db                       *sql.DB
 	tx                       *sql.Tx
 	insert                   *sql.Stmt
+	insertLine               *sql.Stmt
 	dir                      string
 	poison                   error
 	sealed                   bool
@@ -47,6 +48,10 @@ type UpdateStats struct {
 	Removed   int
 	Changed   int
 	Unchanged int
+	// ConsolidatedIDs maps retired per-series inpx:v1 row IDs to the kept
+	// (lowest) ID when a publish rekeys them into one inpx:v2 file group.
+	// Never serialized into status payloads.
+	ConsolidatedIDs map[int64]int64 `json:"-"`
 }
 
 // LibraryBookCount counts visible catalog rows belonging to one library.
@@ -80,6 +85,16 @@ func NewSnapshot(dir string) (*Snapshot, error) {
 		os.RemoveAll(tempDir)
 		return nil, err
 	}
+	if _, err := db.Exec(`CREATE TABLE inpx_lines (file_key TEXT NOT NULL, hash TEXT NOT NULL, book_json BLOB NOT NULL)`); err != nil {
+		db.Close()
+		os.RemoveAll(tempDir)
+		return nil, err
+	}
+	if _, err := db.Exec(`CREATE INDEX idx_inpx_lines_file_key ON inpx_lines (file_key)`); err != nil {
+		db.Close()
+		os.RemoveAll(tempDir)
+		return nil, err
+	}
 	tx, err := db.BeginTx(context.Background(), nil)
 	if err != nil {
 		db.Close()
@@ -93,7 +108,15 @@ func NewSnapshot(dir string) (*Snapshot, error) {
 		os.RemoveAll(tempDir)
 		return nil, err
 	}
-	return &Snapshot{db: db, tx: tx, insert: insert, dir: tempDir}, nil
+	insertLine, err := tx.Prepare(`INSERT INTO inpx_lines (file_key, hash, book_json) VALUES (?, ?, ?)`)
+	if err != nil {
+		insert.Close()
+		tx.Rollback()
+		db.Close()
+		os.RemoveAll(tempDir)
+		return nil, err
+	}
+	return &Snapshot{db: db, tx: tx, insert: insert, insertLine: insertLine, dir: tempDir}, nil
 }
 
 // Add stages one source record. key must represent immutable source identity;
@@ -128,6 +151,131 @@ func (s *Snapshot) Add(ctx context.Context, key string, b *BookInput) error {
 	return nil
 }
 
+// StagedLine is one staged INPX index line with its per-line content hash.
+type StagedLine struct {
+	Hash string
+	Book BookInput
+}
+
+// AddInpxLine stages one INPX index line for later grouping by fileKey
+// (Flibusta repeats a multi-series file as one line per series). Lines share
+// the Add poisoning rules: any invalid row poisons the snapshot.
+func (s *Snapshot) AddInpxLine(ctx context.Context, fileKey, hash string, book BookInput) error {
+	if s == nil || s.closed {
+		return errors.New("snapshot is closed")
+	}
+	if s.poison != nil {
+		return s.poison
+	}
+	if s.sealed {
+		return s.fail(errors.New("snapshot is already sealed"))
+	}
+	if s.insertLine == nil {
+		return s.fail(errors.New("snapshot INPX lines are already collapsed"))
+	}
+	if err := ctx.Err(); err != nil {
+		return s.fail(err)
+	}
+	if strings.TrimSpace(fileKey) == "" {
+		return s.fail(errors.New("snapshot INPX file key is required"))
+	}
+	if strings.TrimSpace(hash) == "" {
+		return s.fail(errors.New("snapshot INPX line hash is required"))
+	}
+	data, err := json.Marshal(&book)
+	if err != nil {
+		return s.fail(err)
+	}
+	if _, err := s.insertLine.ExecContext(ctx, fileKey, hash, data); err != nil {
+		return s.fail(fmt.Errorf("stage INPX line %q: %w", fileKey, err))
+	}
+	return nil
+}
+
+// CollapseInpxLines streams staged INPX lines ordered by file key, folds each
+// file's lines into one staged record through merge, and drops the line store.
+// Memory stays proportional to the largest per-file group. Merge or staging
+// failures poison the snapshot like an invalid Add.
+func (s *Snapshot) CollapseInpxLines(ctx context.Context, merge func(members []StagedLine) (key string, book BookInput, err error)) (int, error) {
+	if s == nil || s.closed {
+		return 0, errors.New("snapshot is closed")
+	}
+	if s.poison != nil {
+		return 0, s.poison
+	}
+	if s.sealed {
+		return 0, s.fail(errors.New("snapshot is already sealed"))
+	}
+	if s.insertLine == nil {
+		return 0, s.fail(errors.New("snapshot INPX lines are already collapsed"))
+	}
+	if err := s.insertLine.Close(); err != nil {
+		return 0, s.fail(err)
+	}
+	s.insertLine = nil
+	rows, err := s.tx.QueryContext(ctx, `SELECT file_key, hash, book_json FROM inpx_lines ORDER BY file_key, rowid`)
+	if err != nil {
+		return 0, s.fail(err)
+	}
+	groups := 0
+	var fileKey string
+	var members []StagedLine
+	flush := func() error {
+		if len(members) == 0 {
+			return nil
+		}
+		key, book, err := merge(members)
+		if err != nil {
+			return s.fail(err)
+		}
+		if err := s.Add(ctx, key, &book); err != nil {
+			return err
+		}
+		groups++
+		members = members[:0]
+		return nil
+	}
+	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			rows.Close()
+			return groups, s.fail(err)
+		}
+		var lineKey, hash string
+		var data []byte
+		if err := rows.Scan(&lineKey, &hash, &data); err != nil {
+			rows.Close()
+			return groups, s.fail(err)
+		}
+		if lineKey != fileKey {
+			if err := flush(); err != nil {
+				rows.Close()
+				return groups, err
+			}
+			fileKey = lineKey
+		}
+		var book BookInput
+		if err := json.Unmarshal(data, &book); err != nil {
+			rows.Close()
+			return groups, s.fail(fmt.Errorf("read staged INPX line %q: %w", lineKey, err))
+		}
+		members = append(members, StagedLine{Hash: hash, Book: book})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return groups, s.fail(err)
+	}
+	if err := rows.Close(); err != nil {
+		return groups, s.fail(err)
+	}
+	if err := flush(); err != nil {
+		return groups, err
+	}
+	if _, err := s.tx.ExecContext(ctx, `DROP TABLE inpx_lines`); err != nil {
+		return groups, s.fail(err)
+	}
+	return groups, nil
+}
+
 func (s *Snapshot) fail(err error) error {
 	if s.poison == nil {
 		s.poison = err
@@ -149,6 +297,12 @@ func (s *Snapshot) seal() error {
 		return s.fail(err)
 	}
 	s.insert = nil
+	if s.insertLine != nil {
+		if err := s.insertLine.Close(); err != nil {
+			return s.fail(err)
+		}
+		s.insertLine = nil
+	}
 	if err := s.tx.Commit(); err != nil {
 		return s.fail(err)
 	}
@@ -166,6 +320,9 @@ func (s *Snapshot) Close() error {
 	if s.insert != nil {
 		s.insert.Close()
 	}
+	if s.insertLine != nil {
+		s.insertLine.Close()
+	}
 	if s.tx != nil {
 		s.tx.Rollback()
 	}
@@ -175,6 +332,10 @@ func (s *Snapshot) Close() error {
 	}
 	return err
 }
+
+// INPX source key versions: inpx:v1 fingerprinted every index line, inpx:v2
+// fingerprints the sorted member hashes of one file's group of lines.
+const inpxV2KeyPrefix = "inpx:v2:"
 
 // PublishLibrary atomically applies a complete source snapshot to one library.
 // Source keys are immutable identities; matching rows keep their catalog data.
@@ -216,6 +377,18 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 	initialHighWater := highWater
 	var writer *ImportSession
 	var maxAuthorID, maxSeriesID int64
+	// Staged inpx:v2 groups rebind same-file inpx:v1 rows (see rekeyInpxGroup).
+	// The probe runs against an indexed temp snapshot of the library's v1 rows,
+	// built lazily and skipped for libraries without any.
+	var hasInpxV1Rows bool
+	var oneRow int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM books WHERE library_id=? AND source_key GLOB 'inpx:v1:*' LIMIT 1`, libraryID).Scan(&oneRow); err == nil {
+		hasInpxV1Rows = true
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return stats, err
+	}
+	v1Probe := false
+	rekeyed := 0
 	// Mark currently present source rows so the staged keys can restore matches
 	// and the rows left marked at the end are newly missing.
 	if _, err := tx.ExecContext(ctx, `UPDATE books SET missing=2 WHERE library_id=? AND source_key!='' AND missing=0`, libraryID); err != nil {
@@ -244,6 +417,43 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 		var id int64
 		var missing int
 		err := tx.QueryRowContext(ctx, `SELECT id, missing FROM books WHERE library_id=? AND source_key=?`, libraryID, key).Scan(&id, &missing)
+		if errors.Is(err, sql.ErrNoRows) && hasInpxV1Rows && strings.HasPrefix(key, inpxV2KeyPrefix) {
+			if !v1Probe {
+				if err := prepareInpxV1Probe(ctx, tx, libraryID); err != nil {
+					return stats, err
+				}
+				v1Probe = true
+			}
+			group, lookupErr := findInpxV1Group(ctx, tx, book.Folder, book.File, book.Ext)
+			if lookupErr != nil {
+				return stats, lookupErr
+			}
+			if len(group) > 0 {
+				if writer == nil {
+					writer, maxAuthorID, maxSeriesID, err = newImportSessionForTx(s, ctx, tx)
+					if err != nil {
+						return stats, err
+					}
+				}
+				if err := rekeyInpxGroup(ctx, tx, writer, key, &book, group[0]); err != nil {
+					return stats, err
+				}
+				rekeyed++
+				// The rebound row now carries its v2 key; keep the temp probe
+				// consistent so a same-(folder, file) probe cannot rebind it.
+				if _, err := tx.ExecContext(ctx, `DELETE FROM polka_v1_files WHERE id=?`, group[0]); err != nil {
+					return stats, err
+				}
+				for _, loser := range group[1:] {
+					if stats.ConsolidatedIDs == nil {
+						stats.ConsolidatedIDs = make(map[int64]int64)
+					}
+					stats.ConsolidatedIDs[loser] = group[0]
+				}
+				stats.Changed++
+				continue
+			}
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			if highWater == math.MaxInt64 {
 				return stats, errors.New("book ID range is exhausted")
@@ -293,6 +503,11 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 	if err := rows.Err(); err != nil {
 		return stats, err
 	}
+	if v1Probe {
+		if _, err := tx.ExecContext(ctx, `DROP TABLE polka_v1_files`); err != nil {
+			return stats, err
+		}
+	}
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM books WHERE library_id=? AND source_key!='' AND missing=2`, libraryID).Scan(&stats.Removed); err != nil {
 		return stats, err
 	}
@@ -316,15 +531,33 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 			return stats, err
 		}
 	}
-	if highWater != initialHighWater {
-		if _, err := tx.ExecContext(ctx, `UPDATE meta SET value=? WHERE key=?`, fmt.Sprint(highWater), bookIDHighWaterKey); err != nil {
-			return stats, fmt.Errorf("save book ID high-water mark: %w", err)
+	if rekeyed > 0 {
+		// Rekeyed winners had their search rows dropped one by one; rebuild
+		// them in a single pass over the live rows that lack one.
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO book_search (rowid,title,authors,series)
+			SELECT b.id,b.title,
+			       coalesce((SELECT group_concat(trim(a.last_name || ' ' || a.first_name || ' ' || a.middle_name), ' ')
+			                 FROM book_authors ba JOIN authors a ON a.id=ba.author_id WHERE ba.book_id=b.id),''),
+			       coalesce((SELECT group_concat(s.title, ' ') FROM book_series bs JOIN series s ON s.id=bs.series_id WHERE bs.book_id=b.id),'')
+			FROM books b WHERE b.library_id=? AND b.deleted=0 AND b.missing=0
+			  AND NOT EXISTS (SELECT 1 FROM book_search WHERE book_search.rowid=b.id)`, libraryID); err != nil {
+			return stats, fmt.Errorf("rebuild rekeyed search rows: %w", err)
 		}
+	}
+	// A consolidation-only publish allocates no book IDs but can still create
+	// series/authors through the rekey path; index those too.
+	if writer != nil {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO authors_search (rowid,name) SELECT id,trim(last_name || ' ' || first_name || ' ' || middle_name) FROM authors WHERE id>?`, maxAuthorID); err != nil {
 			return stats, fmt.Errorf("index new authors: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO series_search (rowid,title) SELECT id,title FROM series WHERE id>?`, maxSeriesID); err != nil {
 			return stats, fmt.Errorf("index new series: %w", err)
+		}
+	}
+	if highWater != initialHighWater {
+		if _, err := tx.ExecContext(ctx, `UPDATE meta SET value=? WHERE key=?`, fmt.Sprint(highWater), bookIDHighWaterKey); err != nil {
+			return stats, fmt.Errorf("save book ID high-water mark: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO book_search (rowid,title,authors,series)
@@ -387,4 +620,99 @@ func restoreBookSearchTx(ctx context.Context, tx *sql.Tx, bookID int64) error {
 		       coalesce((SELECT group_concat(s.title, ' ') FROM book_series bs JOIN series s ON s.id=bs.series_id WHERE bs.book_id=b.id),'')
 		FROM books b WHERE b.id=? AND b.deleted=0 AND b.missing=0`, bookID)
 	return err
+}
+
+// prepareInpxV1Probe snapshots the library's live per-series v1 rows into an
+// indexed temp lookup so per-group consolidation probes are indexed reads
+// instead of per-folder scans. The selection is the consolidation rule:
+// any missing status matches, admin-deleted rows never do.
+func prepareInpxV1Probe(ctx context.Context, tx *sql.Tx, libraryID string) error {
+	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS polka_v1_files`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE polka_v1_files (folder TEXT NOT NULL, file TEXT NOT NULL, ext TEXT NOT NULL, id INTEGER NOT NULL)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO polka_v1_files
+		SELECT f.name, b.file, b.ext, b.id FROM books b JOIN folders f ON f.id=b.folder_id
+		WHERE b.library_id=? AND b.source_key GLOB 'inpx:v1:*' AND b.deleted=0`, libraryID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `CREATE INDEX idx_polka_v1_files ON polka_v1_files (folder, file, ext, id)`)
+	return err
+}
+
+// findInpxV1Group returns the live per-series v1 rows of one file, lowest ID
+// first: the exact consolidation candidates for a staged inpx:v2 group.
+func findInpxV1Group(ctx context.Context, tx *sql.Tx, folder, file, ext string) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM polka_v1_files WHERE folder=? AND file=? AND ext=? ORDER BY id`, folder, file, ext)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// rekeyInpxGroup binds the winner (lowest-ID v1 row of one file) to the staged
+// v2 group content inside the publish transaction: relations and the search
+// row are rebuilt from the merged book, and the row keeps its ID and folder.
+// Remaining v1 rows of the file need no handling: their absent keys retire
+// them to missing through the normal sweep.
+func rekeyInpxGroup(ctx context.Context, tx *sql.Tx, writer *ImportSession, key string, book *BookInput, winner int64) error {
+	for _, table := range []string{"book_authors", "book_genres", "book_keywords", "book_series"} {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE book_id=?`, winner); err != nil {
+			return err
+		}
+	}
+	series := book.seriesRefs()
+	primary := SeriesRef{}
+	if len(series) > 0 {
+		primary = series[0]
+	}
+	var seriesID any
+	if primary.Title != "" {
+		id, err := lookup(writer.series, primary.Title, writer.stmts.series)
+		if err != nil {
+			return fmt.Errorf("series %q: %w", primary.Title, err)
+		}
+		seriesID = id
+	}
+	var seriesNum any
+	if primary.SeqNumber > 0 {
+		seriesNum = primary.SeqNumber
+	}
+	var year any
+	if book.Year > 0 {
+		year = book.Year
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE books SET lib_id=?, title=?, series_id=?, series_num=?, ext=?, size=?, lang=?, year=?, added=?, lib_rate=?, isbn=?, source_key=?, missing=0, deleted=0
+		WHERE id=?`,
+		book.LibID, book.Title, seriesID, seriesNum, book.Ext, book.Size, book.Lang, year, book.Added, book.Rate, NormalizeISBN(book.ISBN), key, winner); err != nil {
+		return err
+	}
+	if err := writer.addBookRelations(winner, book, series); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM book_search WHERE rowid=?`, winner); err != nil {
+		return err
+	}
+	if book.Deleted {
+		if _, err := tx.ExecContext(ctx, `UPDATE books SET missing=1 WHERE id=?`, winner); err != nil {
+			return err
+		}
+		return nil
+	}
+	// The search row is rebuilt in one bulk pass after the publish loop:
+	// per-row restores would dominate a mass consolidation.
+	return nil
 }

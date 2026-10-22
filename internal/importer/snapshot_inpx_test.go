@@ -81,7 +81,7 @@ func TestStageInpxUsesExactRecordIdentityScopedToLibrary(t *testing.T) {
 	if err := st.DB().QueryRow(`SELECT source_key FROM books WHERE library_id=? AND title=?`, one, "A title").Scan(&firstKey); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(firstKey, "inpx:v1:") {
+	if !strings.HasPrefix(firstKey, "inpx:v2:") {
 		t.Fatalf("source key = %q, want versioned INPX prefix", firstKey)
 	}
 	firstID := inpxBookID(t, st, one, firstKey)
@@ -163,7 +163,7 @@ func TestStageInpxMapsDeletedFlagToMissingWithoutChangingIdentity(t *testing.T) 
 	}
 }
 
-func TestStageInpxRejectsIncompleteDuplicateAndCorruptSources(t *testing.T) {
+func TestStageInpxRejectsIncompleteAndCorruptSources(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "catalog.db"))
 	if err != nil {
@@ -183,7 +183,6 @@ func TestStageInpxRejectsIncompleteDuplicateAndCorruptSources(t *testing.T) {
 	id := inpxBookID(t, st, libraryID, key)
 
 	badRow := inpxSource(t, filepath.Join(t.TempDir(), "malformed"), strings.Join(strings.Split(row, sep)[:3], sep))
-	duplicate := inpxSource(t, filepath.Join(t.TempDir(), "duplicate"), row, row)
 	truncated := filepath.Join(t.TempDir(), "truncated.inpx")
 	data, err := os.ReadFile(valid)
 	if err != nil {
@@ -198,10 +197,9 @@ func TestStageInpxRejectsIncompleteDuplicateAndCorruptSources(t *testing.T) {
 	}
 
 	for name, source := range map[string]string{
-		"incomplete row":        badRow,
-		"duplicate full record": duplicate,
-		"truncated archive":     truncated,
-		"corrupt archive":       corrupt,
+		"incomplete row":    badRow,
+		"truncated archive": truncated,
+		"corrupt archive":   corrupt,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := publishInpx(t, st, ctx, libraryID, source); err == nil {
@@ -215,7 +213,167 @@ func TestStageInpxRejectsIncompleteDuplicateAndCorruptSources(t *testing.T) {
 	}
 }
 
-func TestInpxSourceKeyV1Golden(t *testing.T) {
+// Flibusta repeats a multi-series file as one line per series; the lines of
+// one (folder, file, ext) collapse into a single staged group and book.
+func TestStageInpxCollapsesPerSeriesLinesOfOneFile(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	libraryID := inpxLibrary(t, st, ctx, "grouped")
+	alpha := record("Author,One,:Shared,Second,", "genre", "A title", "Alpha", "1", "same-locator", "fb2")
+	beta := record("Author,One,", "genre:other", "A title", "Beta", "2", "same-locator", "fb2")
+	other := record("Author,Two,", "genre", "Another title", "", "", "other-locator", "fb2")
+	source := inpxSource(t, filepath.Join(t.TempDir(), "grouped"), alpha, beta, other)
+
+	snap, info, err := StageInpxWithInfo(ctx, source, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Stats.Books != 2 {
+		t.Fatalf("staged groups = %d, want 2 (one file group plus one single-line file)", info.Stats.Books)
+	}
+	if info.Stats.Authors != 3 || info.Stats.Series != 2 || info.Stats.Genres != 2 {
+		t.Fatalf("staged stats = %+v", info.Stats)
+	}
+	if _, err := st.PublishLibrary(ctx, libraryID, snap, false); err != nil {
+		t.Fatal(err)
+	}
+	_ = snap.Close()
+
+	var count int
+	if err := st.DB().QueryRow(`SELECT count(*) FROM books WHERE library_id=? AND file=?`, libraryID, "same-locator").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("rows for one file = %d, want 1", count)
+	}
+	var key, title, primarySeries string
+	var primaryNum int
+	if err := st.DB().QueryRow(`
+		SELECT b.source_key, b.title, coalesce(s.title, ''), coalesce(b.series_num, 0)
+		FROM books b LEFT JOIN series s ON s.id = b.series_id
+		WHERE b.library_id=? AND b.file=?`, libraryID, "same-locator").Scan(&key, &title, &primarySeries, &primaryNum); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(key, "inpx:v2:") {
+		t.Fatalf("group source key = %q, want inpx:v2: prefix", key)
+	}
+	if title != "A title" || primarySeries != "Alpha" || primaryNum != 1 {
+		t.Fatalf("merged base fields = %q / %q #%d, want first line's A title / Alpha #1", title, primarySeries, primaryNum)
+	}
+	id := inpxBookID(t, st, libraryID, key)
+	refs, err := st.BookSeries(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 2 || refs[0].Title != "Alpha" || refs[0].SeqNumber != 1 || refs[1].Title != "Beta" || refs[1].SeqNumber != 2 {
+		t.Fatalf("merged series = %+v, want Alpha #1 then Beta #2", refs)
+	}
+	var authorCount int
+	if err := st.DB().QueryRow(`SELECT count(*) FROM book_authors WHERE book_id=?`, id).Scan(&authorCount); err != nil {
+		t.Fatal(err)
+	}
+	if authorCount != 2 {
+		t.Fatalf("merged authors = %d, want deduped union of 2", authorCount)
+	}
+	var genreCount int
+	if err := st.DB().QueryRow(`SELECT count(*) FROM book_genres WHERE book_id=?`, id).Scan(&genreCount); err != nil {
+		t.Fatal(err)
+	}
+	if genreCount != 2 {
+		t.Fatalf("merged genres = %d, want union of 2", genreCount)
+	}
+
+	// Byte-identical duplicate lines of one file collapse the same way.
+	duplicate := inpxSource(t, filepath.Join(t.TempDir(), "duplicate"), other, other)
+	if err := publishInpx(t, st, ctx, libraryID, duplicate); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB().QueryRow(`SELECT count(*) FROM books WHERE library_id=? AND file=? AND missing=0`, libraryID, "other-locator").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("rows after duplicate-line source = %d, want 1", count)
+	}
+}
+
+// The group fingerprint covers the sorted member hashes, so reordering the
+// index lines of a file keeps the staged key stable.
+func TestStageInpxGroupKeyStableAcrossLineOrder(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	alpha := record("Author,One,", "genre", "A title", "Alpha", "1", "same-locator", "fb2")
+	beta := record("Author,One,", "genre", "A title", "Beta", "2", "same-locator", "fb2")
+	keyFor := func(name string, rows ...string) string {
+		t.Helper()
+		libraryID := inpxLibrary(t, st, ctx, name)
+		if err := publishInpx(t, st, ctx, libraryID, inpxSource(t, filepath.Join(t.TempDir(), name), rows...)); err != nil {
+			t.Fatal(err)
+		}
+		var key string
+		if err := st.DB().QueryRow(`SELECT source_key FROM books WHERE library_id=?`, libraryID).Scan(&key); err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
+	forward := keyFor("forward", alpha, beta)
+	swapped := keyFor("swapped", beta, alpha)
+	if forward != swapped {
+		t.Fatalf("group key changed with line order: %q vs %q", forward, swapped)
+	}
+}
+
+// A file group maps to missing only when every one of its lines is deleted.
+func TestStageInpxGroupDeletedOnlyWhenAllLinesDeleted(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	libraryID := inpxLibrary(t, st, ctx, "deleted-group")
+	alpha := record("Author,One,", "genre", "A title", "Alpha", "1", "locator", "fb2")
+	beta := record("Author,One,", "genre", "A title", "Beta", "2", "locator", "fb2")
+	deleted := func(row string) string {
+		fields := strings.Split(row, sep)
+		fields[8] = "1"
+		return strings.Join(fields, sep)
+	}
+
+	if err := publishInpx(t, st, ctx, libraryID, inpxSource(t, filepath.Join(t.TempDir(), "live"), alpha, beta)); err != nil {
+		t.Fatal(err)
+	}
+	var key string
+	if err := st.DB().QueryRow(`SELECT source_key FROM books WHERE library_id=?`, libraryID).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	id := inpxBookID(t, st, libraryID, key)
+
+	if err := publishInpx(t, st, ctx, libraryID, inpxSource(t, filepath.Join(t.TempDir(), "mixed"), alpha, deleted(beta))); err != nil {
+		t.Fatal(err)
+	}
+	gotID, missing, _ := inpxState(t, st, libraryID, key)
+	if gotID != id || missing != 0 {
+		t.Fatalf("partly deleted group = id %d missing %d, want id %d missing 0", gotID, missing, id)
+	}
+
+	if err := publishInpx(t, st, ctx, libraryID, inpxSource(t, filepath.Join(t.TempDir(), "deleted"), deleted(alpha), deleted(beta))); err != nil {
+		t.Fatal(err)
+	}
+	gotID, missing, _ = inpxState(t, st, libraryID, key)
+	if gotID != id || missing != 1 {
+		t.Fatalf("fully deleted group = id %d missing %d, want id %d missing 1", gotID, missing, id)
+	}
+}
+
+func TestInpxSourceKeyV2Golden(t *testing.T) {
 	// This encoding is a persisted source identity contract; change it only with
 	// an explicit key-version migration.
 	book := &store.BookInput{
@@ -226,13 +384,21 @@ func TestInpxSourceKeyV1Golden(t *testing.T) {
 		Folder: "books.zip", File: "book-1", Ext: "fb2", Size: 1234,
 		Lang: "en", Year: 2024, Added: "2024-02-03", Rate: 4.5, Deleted: true,
 	}
-	got, err := inpxSourceKey(book)
+	hash, err := inpxLineHash(book)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = "inpx:v1:7c26b7c9400a0995112dd0ecff6339b052abe8f6dc24aa9eb0aa8e36c6f4d23b"
-	if got != want {
-		t.Fatalf("INPX v1 source key = %q, want %q", got, want)
+	const wantHash = "7c26b7c9400a0995112dd0ecff6339b052abe8f6dc24aa9eb0aa8e36c6f4d23b"
+	if hash != wantHash {
+		t.Fatalf("INPX line hash = %q, want %q", hash, wantHash)
+	}
+	key, _, err := mergeInpxLines([]store.StagedLine{{Hash: hash, Book: *book}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "inpx:v2:e23e4f31c13731fdb4daf4e4360fc95a4ad626437fcbe69c34e4775a6dd30855"
+	if key != want {
+		t.Fatalf("INPX v2 source key = %q, want %q", key, want)
 	}
 }
 

@@ -35,15 +35,20 @@ Folder identity is relative path plus full file SHA-256. Byte changes or moves
 produce a new entry in v1; content-based rename matching is deferred to keep
 review small. Staged keys represent immutable records: a matching key retains
 metadata/relations, while a changed key creates a new entry. Source presence is
-separate from the key and can change without reallocating. The initial INPX
-adapter uses an exact full-record fingerprint (excluding its deletion flag),
-scoped to the registered library. Source-ID-only continuity is deferred without
-a verified provider guarantee. Metadata/locator corrections conservatively become
-remove/add in v1. The INPX index is authoritative for record membership: this
-does not verify unchanged archive bytes or detect dump changes absent from the
-index. No full dump hashing is promised. Fuzzy title/author, filename, whole-index
-hash and kosync partial MD5 cannot establish continuity. Unknown legacy entries
-are never automatically matched.
+separate from the key and can change without reallocating. INPX membership is
+per file group: repeated per-series index lines of one file collapse to a
+single entry whose `inpx:v2` key fingerprints the sorted per-line record
+hashes (each excluding its deletion flag), scoped to the registered library.
+Any member metadata correction still becomes remove/add. Publishing a v2 group
+rebinds existing `inpx:v1` rows of the same (folder, file, ext) exactly: the lowest
+ID wins, takes the merged content and keeps per-book-ID state, losers are
+retained missing. Users-DB references merge only through this exact
+loser-winner mapping, never by fuzzy matching. Source-ID-only continuity is
+deferred without a verified provider guarantee. The INPX index is authoritative
+for record membership: this does not verify unchanged archive bytes or detect
+dump changes absent from the index. No full dump hashing is promised. Fuzzy
+title/author, filename, whole-index hash and kosync partial MD5 cannot
+establish continuity. Unknown legacy entries are never automatically matched.
 
 Preserve working legacy progress/digests at migration. New byte-changed files
 receive new IDs, preventing old locators from applying to them. Root resolution

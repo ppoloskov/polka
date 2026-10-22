@@ -149,9 +149,12 @@ unavailable in personal lists/history. Disable a library to hide its books;
 changing its root or source kind requires a new library.
 
 Folder identity uses relative path plus the full file hash; moving or changing a
-file creates a new entry. INPX identity uses exact index records; metadata/locator
-changes also create new entries. Old personal references are retained, never
-reassigned by fuzzy matching. INPX updates do not hash the book dumps themselves.
+file creates a new entry. INPX identity uses exact index records: repeated
+per-series lines of one file collapse into a single entry, and metadata/locator
+changes create new entries. Older per-line duplicate rows consolidate into the
+kept entry on update, carrying personal references over. Remaining old personal
+references are retained, never reassigned by fuzzy matching. INPX updates do
+not hash the book dumps themselves.
 KOReader's existing digest-based sync cannot distinguish byte-identical copies;
 its bridge is outside the separate per-book Polka state guarantee.
 

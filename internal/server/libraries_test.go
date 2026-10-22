@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,7 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vestigiumincaligne/polka/internal/auth"
 	"github.com/vestigiumincaligne/polka/internal/collections"
+	"github.com/vestigiumincaligne/polka/internal/store"
 )
 
 type managedBook struct {
@@ -530,6 +533,129 @@ func TestAdminLibraryUpdateLifecycleAndRootIsolation(t *testing.T) {
 	}
 	if got := managedLibraryID(t, f, "Second"); got != two {
 		t.Fatalf("disabled library was removed or reidentified: %q, want %q", got, two)
+	}
+}
+
+// A library update that consolidates legacy per-series rows into one file
+// group moves the loser's personal references onto the kept book.
+func TestLibraryUpdateConsolidationMergesPersonalReferences(t *testing.T) {
+	f := newFullServer(t, "required")
+	ctx := context.Background()
+	root := t.TempDir()
+	sourcePath := filepath.Join(t.TempDir(), "multi.inpx")
+	line := func(series, serno string) string {
+		return strings.Join([]string{
+			"Writer,Example,", "fiction", "Multi book", series, serno, "multi", "100", "1", "0", "fb2", "2024-01-02", "en", "4", "", "2020", "source-id",
+		}, "\x04")
+	}
+	var data bytes.Buffer
+	zw := zip.NewWriter(&data)
+	for name, contents := range map[string]string{
+		"collection.info": "Multi-series fixture\n",
+		"books.inp":       line("Alpha", "1") + "\r\n" + line("Beta", "2") + "\r\n",
+	} {
+		entry, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write([]byte(contents)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sourcePath, data.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postJSON(t, f.admin, f.ts.URL+"/admin/libraries", map[string]any{
+		"name": "Multi", "kind": "inpx", "root": root, "sourcePath": sourcePath,
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create INPX library: %d", resp.StatusCode)
+	}
+	libraryID := managedLibraryID(t, f, "Multi")
+
+	// Seed the legacy per-series representation: one v1 row per series line.
+	v1 := func(series string, num int) *store.BookInput {
+		return &store.BookInput{
+			Title: "Multi book", Authors: []store.AuthorName{{Last: "Writer", First: "Example"}},
+			Genres: []string{"fiction"}, Series: series, SeriesNum: num,
+			Folder: "books.zip", File: "multi", Ext: "fb2", Size: 100,
+			Lang: "en", Added: "2024-01-02", Rate: 4,
+		}
+	}
+	snap, err := store.NewSnapshot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := snap.Add(ctx, "inpx:v1:aaaa", v1("Alpha", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := snap.Add(ctx, "inpx:v1:bbbb", v1("Beta", 2)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.PublishLibrary(ctx, libraryID, snap, false); err != nil {
+		t.Fatal(err)
+	}
+	snap.Close()
+	var winnerID, loserID int64
+	if err := f.st.DB().QueryRow(`SELECT id FROM books WHERE library_id=? AND source_key='inpx:v1:aaaa'`, libraryID).Scan(&winnerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.DB().QueryRow(`SELECT id FROM books WHERE library_id=? AND source_key='inpx:v1:bbbb'`, libraryID).Scan(&loserID); err != nil {
+		t.Fatal(err)
+	}
+	if winnerID >= loserID {
+		t.Fatalf("fixture IDs out of order: winner %d, loser %d", winnerID, loserID)
+	}
+
+	reader, err := f.users.GetByLogin(ctx, "reader")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.users.SaveProgress(ctx, reader.ID, loserID, auth.Progress{Chapter: 4, Position: 0.5, Overall: 0.4}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.users.RateBook(ctx, reader.ID, loserID, 4); err != nil {
+		t.Fatal(err)
+	}
+	list, err := f.users.CreateList(ctx, reader.ID, "Merge test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.users.AddToList(ctx, reader.ID, list.ID, loserID); err != nil {
+		t.Fatal(err)
+	}
+
+	startLibraryUpdate(t, f, libraryID)
+	waitLibraryUpdate(t, f, libraryID)
+	status := libraryJSON(t, f.admin, f.ts.URL+"/admin/import/status")
+	if status["changed"].(float64) != 1 || status["removed"].(float64) != 1 || status["added"].(float64) != 0 {
+		t.Fatalf("consolidation update status = %v, want 1 rekeyed winner and 1 swept loser", status)
+	}
+	if got := managedBooks(t, f, libraryID)["books.zip/multi.fb2"]; got.id != winnerID || got.missing != 0 {
+		t.Fatalf("consolidated row = %+v, want kept winner ID %d present", got, winnerID)
+	}
+
+	progress, err := f.users.GetProgress(ctx, reader.ID, winnerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if progress.Chapter != 4 {
+		t.Fatalf("merged progress chapter = %d, want loser's 4", progress.Chapter)
+	}
+	if _, err := f.users.GetProgress(ctx, reader.ID, loserID); !errors.Is(err, auth.ErrNotFound) {
+		t.Fatalf("loser progress after merge: %v, want not found", err)
+	}
+	if rating := f.users.UserRating(ctx, reader.ID, winnerID); rating != 4 {
+		t.Fatalf("merged rating = %d, want loser's 4", rating)
+	}
+	lists, err := f.users.BookListIDs(ctx, reader.ID, winnerID)
+	if err != nil || len(lists) != 1 || lists[0] != list.ID {
+		t.Fatalf("winner lists after merge = %v, %v; want list %d", lists, err, list.ID)
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/vestigiumincaligne/polka/internal/inpx"
@@ -109,12 +111,13 @@ func StageInpxWithInfo(ctx context.Context, path, stagingDir string, onProgress 
 			return err
 		}
 		book := toBookInput(rec)
-		key, err := inpxSourceKey(book)
+		hash, err := inpxLineHash(book)
 		if err != nil {
 			return err
 		}
-		if err := snapshot.Add(ctx, key, book); err != nil {
-			return fmt.Errorf("stage INPX record %q: %w", key, err)
+		fileKey := book.Folder + "\x00" + book.File + "\x00" + book.Ext
+		if err := snapshot.AddInpxLine(ctx, fileKey, hash, *book); err != nil {
+			return fmt.Errorf("stage INPX record %q: %w", fileKey, err)
 		}
 		for _, author := range book.Authors {
 			authors[author] = struct{}{}
@@ -139,15 +142,25 @@ func StageInpxWithInfo(ctx context.Context, path, stagingDir string, onProgress 
 	if err != nil {
 		return nil, info, err
 	}
+	groups, err := snapshot.CollapseInpxLines(ctx, mergeInpxLines)
+	if err != nil {
+		return nil, info, err
+	}
 	if onProgress != nil {
 		onProgress("loading", processed)
 	}
 	info.CollectionName = f.CollectionName()
-	info.Stats = store.ImportStats{Books: processed, Authors: len(authors), Series: len(series), Genres: len(genres), Duration: time.Since(started)}
+	info.Stats = store.ImportStats{Books: groups, Authors: len(authors), Series: len(series), Genres: len(genres), Duration: time.Since(started)}
 	return snapshot, info, nil
 }
 
-func inpxSourceKey(book *store.BookInput) (string, error) {
+// inpxV2KeyPrefix prefixes group fingerprints: one staged entry per file,
+// however many per-series lines the index repeats for it.
+const inpxV2KeyPrefix = "inpx:v2:"
+
+// inpxLineHash is the per-line content hash (the v1 fingerprint without its
+// prefix): the record JSON with runtime and deletion fields zeroed.
+func inpxLineHash(book *store.BookInput) (string, error) {
 	identity := *book
 	identity.LibraryID = ""
 	identity.SourceKey = ""
@@ -157,5 +170,56 @@ func inpxSourceKey(book *store.BookInput) (string, error) {
 		return "", err
 	}
 	sum := sha256.Sum256(data)
-	return "inpx:v1:" + hex.EncodeToString(sum[:]), nil
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// mergeInpxLines folds the per-series lines of one file into a single staged
+// group. The first line in index order supplies the base fields; authors,
+// genres and keywords are unions in first-seen order; every line's series is
+// kept in line order. The group fingerprint covers every sorted member hash,
+// so any metadata change in any member removes and re-adds the entry.
+func mergeInpxLines(members []store.StagedLine) (string, store.BookInput, error) {
+	book := members[0].Book
+	book.Deleted = true
+	var authors []store.AuthorName
+	var genres, keywords []string
+	var seriesList []store.SeriesRef
+	seenAuthors := make(map[store.AuthorName]struct{})
+	seenGenres := make(map[string]struct{})
+	seenKeywords := make(map[string]struct{})
+	hashes := make([]string, 0, len(members))
+	for _, member := range members {
+		hashes = append(hashes, member.Hash)
+		if !member.Book.Deleted {
+			book.Deleted = false
+		}
+		for _, author := range member.Book.Authors {
+			if _, ok := seenAuthors[author]; !ok {
+				seenAuthors[author] = struct{}{}
+				authors = append(authors, author)
+			}
+		}
+		for _, genre := range member.Book.Genres {
+			if _, ok := seenGenres[genre]; !ok {
+				seenGenres[genre] = struct{}{}
+				genres = append(genres, genre)
+			}
+		}
+		for _, keyword := range member.Book.Keywords {
+			if _, ok := seenKeywords[keyword]; !ok {
+				seenKeywords[keyword] = struct{}{}
+				keywords = append(keywords, keyword)
+			}
+		}
+		if member.Book.Series != "" {
+			seriesList = append(seriesList, store.SeriesRef{Title: member.Book.Series, SeqNumber: member.Book.SeriesNum})
+		}
+	}
+	book.Authors = authors
+	book.Genres = genres
+	book.Keywords = keywords
+	book.SeriesList = seriesList
+	sort.Strings(hashes)
+	sum := sha256.Sum256([]byte(strings.Join(hashes, "")))
+	return inpxV2KeyPrefix + hex.EncodeToString(sum[:]), book, nil
 }
