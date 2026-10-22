@@ -73,3 +73,14 @@ Cleanup validation passed full Go tests/vet, both binaries, 58 frontend tests
 and production build. Disposable HTTP acceptance: `final-libraries-wrbdlpkm`;
 unchanged-config native upgrade: `wp4b-native-9uh1r64z` (validation directory).
 The legacy warning/rematch regression passed ten consecutive runs.
+
+
+Cleanup image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-945f187`
+resolves to `sha256:c4514a6fbd02e4bc6eb09dfa51553aab72fa2f26bb06b8afc0a1c1583b423f2c`
+for Linux/amd64, built from commit
+`945f1877f1d7b081edec8ffc186f13d4d4aebc11`. Registry metadata matched the build;
+the remote BuildKit smoke verified version, unprivileged `polka`, health 200,
+creation of both databases, and graceful shutdown. Evidence:
+`/private/tmp/polka-validation/cleanup-image/{build-metadata.json,registry-verification.json}`.
+The latest tag and digest-pinned live deployment were unchanged.
