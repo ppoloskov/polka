@@ -56,12 +56,16 @@ func (s *Server) bookText(r *http.Request, bookID int64) (*library.FB2Text, erro
 	if err != nil {
 		return nil, err
 	}
+	lib, err := s.bookLibrary(r.Context(), bookID)
+	if err != nil {
+		return nil, err
+	}
 	imgURL := func(id string) string {
 		return fmt.Sprintf("/api/v1/read/%d/img/%s", bookID, id)
 	}
 	var text *library.FB2Text
 	if strings.EqualFold(f.Ext, "fb2") {
-		rc, size, openErr := s.lib.Open(f.Folder, f.File, f.Ext)
+		rc, size, openErr := lib.Open(f.Folder, f.File, f.Ext)
 		if openErr != nil {
 			return nil, openErr
 		}
@@ -77,7 +81,7 @@ func (s *Server) bookText(r *http.Request, bookID int64) (*library.FB2Text, erro
 			}
 		}
 	} else {
-		text, err = s.lib.Text(f.Folder, f.File, f.Ext, imgURL)
+		text, err = lib.Text(f.Folder, f.File, f.Ext, imgURL)
 	}
 	if err != nil {
 		return nil, err
@@ -87,10 +91,6 @@ func (s *Server) bookText(r *http.Request, bookID int64) (*library.FB2Text, erro
 }
 
 func (s *Server) readerBookID(w http.ResponseWriter, r *http.Request) (int64, bool) {
-	if s.lib == nil {
-		http.Error(w, "library dir is not configured", http.StatusNotFound)
-		return 0, false
-	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.NotFound(w, r)
@@ -203,7 +203,12 @@ func (s *Server) handleReadImage(w http.ResponseWriter, r *http.Request) {
 		s.apiError(w, err)
 		return
 	}
-	data, mime, err := s.lib.Binary(f.Folder, f.File, f.Ext, imgID)
+	lib, err := s.bookLibrary(r.Context(), bookID)
+	if err != nil {
+		s.apiError(w, err)
+		return
+	}
+	data, mime, err := lib.Binary(f.Folder, f.File, f.Ext, imgID)
 	if err != nil {
 		s.apiError(w, err)
 		return
@@ -252,23 +257,28 @@ func (s *Server) handleReadProgress(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var ko *auth.KosyncProgress
-		if p.Locator != "" && strings.HasPrefix(p.Locator, "/FictionBook") && s.lib != nil {
-			text, err := s.bookText(r, bookID)
-			if err != nil {
+		if p.Locator != "" && strings.HasPrefix(p.Locator, "/FictionBook") {
+			if _, err := s.bookLibrary(r.Context(), bookID); err == nil {
+				text, err := s.bookText(r, bookID)
+				if err != nil {
+					s.apiError(w, err)
+					return
+				}
+				if digest == "" || digest != text.Digest {
+					http.Error(w, "book file changed; reopen the reader", http.StatusPreconditionFailed)
+					return
+				}
+				locator, chapter, position, overall, ok := text.ResolveFB2Locator(p.Locator)
+				if !ok {
+					http.Error(w, "invalid FB2 location", http.StatusBadRequest)
+					return
+				}
+				p.Locator, p.Chapter, p.Position, p.Overall = storeFB2Position(digest, locator), chapter, position, overall
+				ko = &auth.KosyncProgress{Document: digest, Progress: locator, Percentage: overall, Device: "Polka web reader", DeviceID: "polka-web"}
+			} else if !errors.Is(err, errLibraryDirNotConfigured) {
 				s.apiError(w, err)
 				return
 			}
-			if digest == "" || digest != text.Digest {
-				http.Error(w, "book file changed; reopen the reader", http.StatusPreconditionFailed)
-				return
-			}
-			locator, chapter, position, overall, ok := text.ResolveFB2Locator(p.Locator)
-			if !ok {
-				http.Error(w, "invalid FB2 location", http.StatusBadRequest)
-				return
-			}
-			p.Locator, p.Chapter, p.Position, p.Overall = storeFB2Position(digest, locator), chapter, position, overall
-			ko = &auth.KosyncProgress{Document: digest, Progress: locator, Percentage: overall, Device: "Polka web reader", DeviceID: "polka-web"}
 		}
 		savedRevision, err := s.users.SaveBridgedProgress(r.Context(), u.ID, bookID, p, revision, ko)
 		if errors.Is(err, auth.ErrProgressConflict) {

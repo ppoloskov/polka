@@ -101,7 +101,11 @@ func (s *Server) handleSendBook(w http.ResponseWriter, r *http.Request) {
 		s.apiError(w, err)
 		return
 	}
-	rc, size, err := s.lib.Open(f.Folder, f.File, f.Ext)
+	lib := s.bookLibraryOr404(w, r, bookID)
+	if lib == nil {
+		return
+	}
+	rc, size, err := lib.Open(f.Folder, f.File, f.Ext)
 	if err != nil {
 		s.apiError(w, err)
 		return
