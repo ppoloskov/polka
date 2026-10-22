@@ -100,7 +100,13 @@ func TestMigrateV4Series(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.db.Exec(`DROP TABLE book_series; PRAGMA user_version = 4`); err != nil {
+	if _, err := st.db.Exec(`
+		DROP TABLE book_series;
+		DROP TABLE libraries;
+		ALTER TABLE books DROP COLUMN source_key;
+		ALTER TABLE books DROP COLUMN missing;
+		ALTER TABLE books DROP COLUMN library_id;
+		PRAGMA user_version = 4`); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.Close(); err != nil {

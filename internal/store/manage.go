@@ -75,19 +75,18 @@ func (s *Store) AddBook(ctx context.Context, b *BookInput) (int64, error) {
 	if b.Year > 0 {
 		year = b.Year
 	}
-
-	res, err := tx.ExecContext(ctx, `
-		INSERT INTO books (lib_id, title, series_id, series_num, folder_id, file, ext, size, lang, year, added, lib_rate, deleted, file_hash, content_hash, isbn)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
-		b.LibID, b.Title, seriesID, seriesNum, folderID, b.File, b.Ext, b.Size, b.Lang, year, b.Added, b.Rate, b.FileHash, b.ContentHash, NormalizeISBN(b.ISBN))
-	if err != nil {
-		return 0, err
-	}
-	bookID, err := res.LastInsertId()
+	bookID, err := allocateBookID(ctx, tx)
 	if err != nil {
 		return 0, err
 	}
 
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO books (id, lib_id, title, series_id, series_num, folder_id, file, ext, size, lang, year, added, lib_rate, deleted, file_hash, content_hash, isbn)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+		bookID, b.LibID, b.Title, seriesID, seriesNum, folderID, b.File, b.Ext, b.Size, b.Lang, year, b.Added, b.Rate, b.FileHash, b.ContentHash, NormalizeISBN(b.ISBN))
+	if err != nil {
+		return 0, err
+	}
 	if _, err := addBookSeries(ctx, tx, bookID, series); err != nil {
 		return 0, err
 	}

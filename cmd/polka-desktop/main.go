@@ -98,6 +98,14 @@ func run() error {
 		return fmt.Errorf("open users database: %w", err)
 	}
 	defer users.Close()
+	ctx := context.Background()
+	maxBookID, err := users.MaxBookID(ctx)
+	if err != nil {
+		return fmt.Errorf("read user book IDs: %w", err)
+	}
+	if err := st.ReserveBookIDs(ctx, maxBookID); err != nil {
+		return fmt.Errorf("reserve catalog book IDs: %w", err)
+	}
 
 	webFS, err := web.Dist()
 	if err != nil {

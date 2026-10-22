@@ -123,6 +123,12 @@ make build        # builds web UI + bin/polka + bin/polka-desktop
 
 ## Importing a large catalog
 
+Persistent INPX and recursive folder libraries are being developed as a small
+[PR series](docs/specs/planned/multiple-libraries-work-queue.md). Existing
+installations must keep working with unchanged configuration after an image
+upgrade. See the [compatibility contract](docs/specs/architecture/multiple-libraries-compatibility.md)
+for migration and identity boundaries; the complete feature is not yet available.
+
 Polka understands `.inpx` index files (MyHomeLib / Flibusta format) — both
 from the command line and from the web UI (*Manage → Import*):
 
