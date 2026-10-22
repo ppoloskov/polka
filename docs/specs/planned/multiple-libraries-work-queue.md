@@ -19,7 +19,8 @@ checkout work; implementation lives in the attached multiple-libraries worktree.
 | Admin UI | Existing screen controls both sources and manual updates | PR #11, `eca0ab3`; 41 web tests/build and both binaries in pr11 |
 | Minimal completion | Reader selector/badges/unavailable cards; shared metadata parser | PR #12, `a6d31b6`; exact-head Go/web checks, native upgrade and HTTP acceptance |
 | Publication reads/perf | WAL reader, bulk publish, scoped FTS indexing, cover ETags | PR #14, `ed473ff`; full Go checks and 60 web tests |
-| INPX series groups | Multi-series files collapse to one entry; v1 rows consolidated | PR #NN, TBD; full Go checks |
+| Cover 404 caching | Missing covers cacheable; web stops re-requesting failed covers | PR #16, `e8428eb`; full Go checks and 64 web tests |
+| INPX series groups | Multi-series files collapse to one entry; v1 rows consolidated | PR #17, `bd5fa6b`; full Go checks |
 
 Full Go checks mean `go test ./...`, `go vet ./...`, server and desktop builds
 from each exact committed archive. Frontend checks use the unchanged lockfile;
