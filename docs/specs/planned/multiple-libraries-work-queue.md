@@ -11,7 +11,8 @@ architect reviews scope/style/behavior before Git publication.
 | --- | --- | --- | --- | --- |
 | WP1 | Automatic additive default-library migration, registry, durable allocator shared by existing insert paths, reserve known auth refs before startup/import; newer-schema rejection. No source scans or changed public routes. | None | v5/v1/fresh/reopen, row/relation/deletion preservation, Clear/reopen/import/upload allocation | Exact commit validated; publishing |
 | WP2 | Resolve each book's owning root across all serving paths while preserving dynamic legacy root and uploads | WP1 | same config/root changes, two roots with same locator, reader/download/cover/export/email, existing suites | Reviewed; HTTP/server/library tests pass; exact-commit verification next |
-| WP3 | Disk-backed snapshot staging and atomic target-only publication; missing separate from admin deleted; preserve personal state and other libraries | WP1 | diff/idempotence/remove/reappear/admin hidden, rollback/error/cancel/restart, no global search/index clearing | Red tests reviewed; implementation in progress |
+| WP3 | Disk-backed snapshot staging and atomic target-only publication; missing separate from admin deleted; preserve personal state and other libraries | WP1 | diff/idempotence/remove/reappear/admin hidden, rollback/error/cancel/restart, no global search/index clearing | Reviewed; focused tests/vet pass; exact-commit validation next |
+| WP3b | Availability filtering before exposing update entrypoints; missing/disabled excluded from normal counts, browsing, files and cached chapters | WP2, WP3 | missing/disabled counts/search/author/series/file/recommendations, reader-cache removal and restore | Test writing |
 | WP4 | INPX saved-source updater and existing CLI/web import adapters over same engine | WP2, WP3 | strict parse/completeness/key policy, source path/upload/default target, failure/retry/empty approval, unchanged old contracts | Pending |
 | WP5 | Recursive folder adapter, full-byte hashes, existing metadata parsers/fallback | WP2, WP3 | recursive add/change/remove, duplicate copies, symlinks/traversal/unreadable/unstable inputs, realistic source tree | Pending |
 | WP6 | Admin libraries UI/API/CLI, combined browsing/filter/source badges and unavailable personal entries | WP4, WP5 | admin authorization/demo/connected proxy, counts/pagination/filter/bulk, existing UI tests/build and real HTTP workflows | Pending |
@@ -82,3 +83,15 @@ formatting. No query positional scan or reader protocol changed.
 
 Status: implementation authorized; WP1 publishing, WP2 reviewed, WP3 implementing.
 Next: exact-commit WP2 validation/publication, then snapshot availability work.
+
+Published: [foundation PR #1](https://github.com/ppoloskov/polka/pull/1), then
+[roots PR #2](https://github.com/ppoloskov/polka/pull/2) stacked on #1. Both exact
+commits passed full Go tests/vet/build and native old-binary upgrade checks.
+
+WP3 implements only internal staging/publication, not a new public import flow.
+Red tests exposed missing APIs; green snapshot tests cover two namespaces,
+idempotence, remove/reappear, source/admin deletion, duplicate poisoning, empty/
+cancelled input, and mid-insert rollback of rows/search/allocation floor. Review
+removed mutable-record comparison machinery and redundant relation helpers;
+one existing insert path is reused inside the publication transaction. Full
+store validation will use the committed tree without pending availability tests.

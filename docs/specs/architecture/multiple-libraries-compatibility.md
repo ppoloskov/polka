@@ -33,10 +33,17 @@ not release blockers requiring a new sync protocol. Never infer their identity.
 
 Folder identity is relative path plus full file SHA-256. Byte changes or moves
 produce a new entry in v1; content-based rename matching is deferred to keep
-review small. INPX source keys need explicit provider continuity guarantees;
-otherwise conservative exact-record continuity cannot claim byte identity.
-Resolve the concrete INPX key/evidence policy before WP4 acceptance. Fuzzy
-title/author, filename, index hash, and kosync partial MD5 are not identity proof.
+review small. Staged keys represent immutable records: a matching key retains
+metadata/relations, while a changed key creates a new entry. Source presence is
+separate from the key and can change without reallocating. The initial INPX
+adapter uses an exact full-record fingerprint (excluding its deletion flag),
+scoped to the registered library. Source-ID-only continuity is deferred without
+a verified provider guarantee. Metadata/locator corrections conservatively become
+remove/add in v1. The INPX index is authoritative for record membership: this
+does not verify unchanged archive bytes or detect dump changes absent from the
+index. No full dump hashing is promised. Fuzzy title/author, filename, whole-index
+hash and kosync partial MD5 cannot establish continuity. Unknown legacy entries
+are never automatically matched.
 
 Preserve working legacy progress/digests at migration. New byte-changed files
 receive new IDs, preventing old locators from applying to them. Root resolution

@@ -11,6 +11,8 @@ import (
 // BookInput is a single book for bulk import.
 type BookInput struct {
 	LibID      string
+	LibraryID  string
+	SourceKey  string
 	Title      string
 	Series     string
 	SeriesNum  int

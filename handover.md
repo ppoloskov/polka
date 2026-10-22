@@ -36,6 +36,15 @@ skip-missing and unset-root progress behavior retained. Exact-commit validation
 and publication next. WP3 disk-backed atomic snapshot tests reviewed;
 implementation underway, not yet exposed through CLI/API or called verified.
 
+Published PRs: https://github.com/ppoloskov/polka/pull/1 (foundation) and
+https://github.com/ppoloskov/polka/pull/2 (roots, stacked on foundation).
+WP2 exact `fde13fa` passed full tests/vet/build and native upgrade with unchanged
+legacy root config. WP3 snapshot primitive is now reviewed; focused tests/vet
+pass. It uses immutable keys and disk-backed staging, preserving target IDs,
+admin deletion and other libraries, with rollback of all catalog/search/allocator
+changes on error. Exact-commit checks and publication are next. Availability
+tests are being implemented separately; exclude them from the snapshot commit.
+
 Known legacy limit: lost/reused historical IDs and IDs retained only by offline
 clients cannot be reconstructed. Guarantee forward allocation safety from the
 known persisted migration boundary; do not expand sync protocols to claim repair.
