@@ -291,7 +291,7 @@ func (s *Store) FindSimilar(ctx context.Context, title string, authorLastNames [
 
 // BooksByIDs returns books in the order of the given ids (missing
 // and deleted ones are skipped).
-func (s *Store) BooksByIDs(ctx context.Context, ids []int64) ([]Book, error) {
+func (s *Store) BooksByIDs(ctx context.Context, ids []int64, libraryIDs ...string) ([]Book, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -300,21 +300,12 @@ func (s *Store) BooksByIDs(ctx context.Context, ids []int64) ([]Book, error) {
 	for i, id := range ids {
 		args[i] = id
 	}
-	books, err := s.queryBooks(ctx, `b.id IN (`+placeholders+`)`, "", 0, 0, args...)
+	where, args := addLibraryScope(`b.id IN (`+placeholders+`)`, "b", scopeLibraryID(libraryIDs), args)
+	books, err := s.queryBooks(ctx, where, "", 0, 0, args...)
 	if err != nil {
 		return nil, err
 	}
-	byID := make(map[int64]Book, len(books))
-	for _, b := range books {
-		byID[b.ID] = b
-	}
-	ordered := make([]Book, 0, len(books))
-	for _, id := range ids {
-		if b, ok := byID[id]; ok {
-			ordered = append(ordered, b)
-		}
-	}
-	return ordered, nil
+	return orderBooksByID(ids, books), nil
 }
 
 // BookFilesByIDs returns files of existing books for bulk serving.

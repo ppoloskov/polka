@@ -31,3 +31,8 @@ Library management reuses the existing import mutex/status. Source paths and
 kinds are fixed after registration; changing a root requires a new namespace.
 Keep public library metadata free of server paths. Successful updates and
 enable/disable changes must invalidate genre counts; update cover caches by owner.
+
+Catalog libraryId filters must apply before LIMIT/OFFSET, including personal
+shelves and external collection references. Book column additions must stay
+aligned across every scan. Personal metadata lookup may retain missing/disabled
+entries; ordinary catalog queries and file serving must remain availability-gated.

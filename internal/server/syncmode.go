@@ -91,7 +91,7 @@ func (s *Server) maybeSyncAfter(next http.HandlerFunc) http.HandlerFunc {
 // the local catalog, in sync mode from the offline cache or the server.
 func (s *Server) resolveBooksJSON(r *http.Request, ids []int64) []map[string]any {
 	if s.sync == nil {
-		books, err := s.st.BooksByIDs(r.Context(), ids)
+		books, err := s.st.PersonalBooksByIDs(r.Context(), ids)
 		if err != nil {
 			return []map[string]any{}
 		}

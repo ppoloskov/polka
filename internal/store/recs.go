@@ -12,7 +12,8 @@ import (
 // SimilarBooks picks books similar to the given one: shared keywords (a strong
 // signal), genre overlap, the same author; a boost for rating.
 // Books from the same series are excluded — they are already on the card.
-func (s *Store) SimilarBooks(ctx context.Context, bookID int64, limit int) ([]Book, error) {
+func (s *Store) SimilarBooks(ctx context.Context, bookID int64, limit int, libraryIDs ...string) ([]Book, error) {
+	libraryID := scopeLibraryID(libraryIDs)
 	rows, err := s.db.QueryContext(ctx, `
 		WITH seed AS (SELECT series_id FROM books WHERE id = ?1),
 		seed_genres AS (SELECT genre_id FROM book_genres WHERE book_id = ?1),
@@ -38,6 +39,7 @@ func (s *Store) SimilarBooks(ctx context.Context, bookID int64, limit int) ([]Bo
 			          WHERE ba.book_id = b.id), ''),
 			coalesce(s2.title, ''), coalesce(b.series_num, 0), coalesce(b.year, 0),
 			b.lib_rate, b.ext, b.size,
+			b.library_id, l.name, (b.missing = 0 AND l.enabled = 1),
 			(SELECT count(*) FROM book_keywords bk JOIN seed_kw USING (keyword_id) WHERE bk.book_id = b.id) * 3.0
 			+ (SELECT count(*) FROM book_genres bg JOIN seed_genres USING (genre_id) WHERE bg.book_id = b.id) * 2.0
 			+ (SELECT count(*) FROM book_authors ba JOIN seed_authors USING (author_id) WHERE ba.book_id = b.id) * 1.2
@@ -45,13 +47,15 @@ func (s *Store) SimilarBooks(ctx context.Context, bookID int64, limit int) ([]Bo
 		FROM books b
 		JOIN cand ON cand.id = b.id
 		LEFT JOIN series s2 ON s2.id = b.series_id
+		JOIN libraries l ON l.id = b.library_id
 		WHERE b.id != ?1 AND b.deleted = 0 AND b.missing = 0
 			AND EXISTS (SELECT 1 FROM libraries l WHERE l.id = b.library_id AND l.enabled = 1)
+			AND (?3 = '' OR b.library_id = ?3)
 			AND (b.series_id IS NULL OR b.series_id IS NOT (SELECT series_id FROM seed))
 			-- skip translations and foreign-language editions
 			AND ((SELECT lang FROM books WHERE id = ?1) = '' OR b.lang = (SELECT lang FROM books WHERE id = ?1))
 		ORDER BY score DESC, b.lib_rate DESC
-		LIMIT ?2`, bookID, limit)
+		LIMIT ?2`, bookID, limit, libraryID)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +66,8 @@ func (s *Store) SimilarBooks(ctx context.Context, bookID int64, limit int) ([]Bo
 		var b Book
 		var score float64
 		if err := rows.Scan(&b.ID, &b.Title, &b.AuthorNames, &b.SeriesTitle,
-			&b.SeqNumber, &b.Year, &b.LibRate, &b.Ext, &b.Size, &score); err != nil {
+			&b.SeqNumber, &b.Year, &b.LibRate, &b.Ext, &b.Size,
+			&b.LibraryID, &b.LibraryName, &b.Available, &score); err != nil {
 			return nil, err
 		}
 		books = append(books, b)
@@ -71,9 +76,14 @@ func (s *Store) SimilarBooks(ctx context.Context, bookID int64, limit int) ([]Bo
 }
 
 // SeriesContinuations: for finished books that belong to series, the next book in the series.
-func (s *Store) SeriesContinuations(ctx context.Context, seedIDs, excludeIDs []int64, limit int) ([]Book, error) {
+func (s *Store) SeriesContinuations(ctx context.Context, seedIDs, excludeIDs []int64, limit int, libraryIDs ...string) ([]Book, error) {
 	if len(seedIDs) == 0 {
 		return nil, nil
+	}
+	libraryID := scopeLibraryID(libraryIDs)
+	bookScope, nextScope := "", ""
+	if libraryID != "" {
+		bookScope, nextScope = `AND b.library_id = ?`, `AND b2.library_id = ?`
 	}
 	q := fmt.Sprintf(`
 		WITH seeds AS (
@@ -84,32 +94,43 @@ func (s *Store) SeriesContinuations(ctx context.Context, seedIDs, excludeIDs []i
 		SELECT b.id FROM seeds
 		JOIN books b ON b.series_id = seeds.series_id AND b.deleted = 0 AND b.missing = 0
 			AND EXISTS (SELECT 1 FROM libraries l WHERE l.id = b.library_id AND l.enabled = 1)
+			%s
 			AND b.series_num = (
 				SELECT min(b2.series_num) FROM books b2
 				WHERE b2.series_id = seeds.series_id AND b2.deleted = 0
 					AND b2.missing = 0 AND EXISTS (SELECT 1 FROM libraries l WHERE l.id = b2.library_id AND l.enabled = 1)
+					%s
 					AND b2.series_num > seeds.last_num
 					%s
 			)
 		LIMIT %d`,
-		placeholders(len(seedIDs)), notInClause("b2.id", len(excludeIDs), len(seedIDs)+1), limit)
+		placeholders(len(seedIDs)), bookScope, nextScope,
+		notInClause("b2.id", len(excludeIDs), 0), limit)
 
 	args := idsToArgs(seedIDs)
+	if libraryID != "" {
+		args = append(args, libraryID, libraryID)
+	}
 	args = append(args, idsToArgs(excludeIDs)...)
 	ids, err := s.queryIDs(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
-	return s.BooksByIDs(ctx, ids)
+	return s.BooksByIDs(ctx, ids, libraryID)
 }
 
 // RecommendForUser: unread books by favorite authors and the top of favorite
 // genres (based on seeds — liked/currently-read books).
-func (s *Store) RecommendForUser(ctx context.Context, seedIDs, excludeIDs []int64, limit int) ([]Book, error) {
+func (s *Store) RecommendForUser(ctx context.Context, seedIDs, excludeIDs []int64, limit int, libraryIDs ...string) ([]Book, error) {
 	if len(seedIDs) == 0 {
 		return nil, nil
 	}
 	half := limit/2 + 1
+	libraryID := scopeLibraryID(libraryIDs)
+	authorScope, genreScope := "", ""
+	if libraryID != "" {
+		authorScope, genreScope = `AND b.library_id = ?`, `AND b.library_id = ?`
+	}
 
 	// Books by favorite authors (best by rating)
 	qAuthors := fmt.Sprintf(`
@@ -120,14 +141,18 @@ func (s *Store) RecommendForUser(ctx context.Context, seedIDs, excludeIDs []int6
 		JOIN seed_authors USING (author_id)
 		JOIN books b ON b.id = ba.book_id AND b.deleted = 0 AND b.missing = 0
 			AND EXISTS (SELECT 1 FROM libraries l WHERE l.id = b.library_id AND l.enabled = 1)
-		WHERE b.id NOT IN (%s) %s
+		WHERE b.id NOT IN (%s) %s %s
 		ORDER BY b.lib_rate DESC, b.id DESC LIMIT %d`,
 		placeholders(len(seedIDs)), placeholders2(len(seedIDs), len(seedIDs)),
-		notInClause("b.id", len(excludeIDs), 2*len(seedIDs)+1), half)
-	args := idsToArgs(seedIDs)
-	args = append(args, idsToArgs(seedIDs)...)
-	args = append(args, idsToArgs(excludeIDs)...)
-	byAuthor, err := s.queryIDs(ctx, qAuthors, args...)
+		notInClause("b.id", len(excludeIDs), 2*len(seedIDs)+1), authorScope, half)
+	baseArgs := idsToArgs(seedIDs)
+	baseArgs = append(baseArgs, idsToArgs(seedIDs)...)
+	baseArgs = append(baseArgs, idsToArgs(excludeIDs)...)
+	authorArgs := append([]any{}, baseArgs...)
+	if libraryID != "" {
+		authorArgs = append(authorArgs, libraryID)
+	}
+	byAuthor, err := s.queryIDs(ctx, qAuthors, authorArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -142,11 +167,15 @@ func (s *Store) RecommendForUser(ctx context.Context, seedIDs, excludeIDs []int6
 		WHERE b.lib_rate >= 4 AND b.deleted = 0 AND b.missing = 0
 			AND EXISTS (SELECT 1 FROM libraries l WHERE l.id = b.library_id AND l.enabled = 1)
 			AND b.id IN (SELECT book_id FROM book_genres JOIN fav_genres USING (genre_id))
-			AND b.id NOT IN (%s) %s
+			AND b.id NOT IN (%s) %s %s
 		ORDER BY b.lib_rate DESC, b.id DESC LIMIT %d`,
 		placeholders(len(seedIDs)), placeholders2(len(seedIDs), len(seedIDs)),
-		notInClause("b.id", len(excludeIDs), 2*len(seedIDs)+1), half)
-	byGenre, err := s.queryIDs(ctx, qGenres, args...)
+		notInClause("b.id", len(excludeIDs), 2*len(seedIDs)+1), genreScope, half)
+	genreArgs := append([]any{}, baseArgs...)
+	if libraryID != "" {
+		genreArgs = append(genreArgs, libraryID)
+	}
+	byGenre, err := s.queryIDs(ctx, qGenres, genreArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +194,7 @@ func (s *Store) RecommendForUser(ctx context.Context, seedIDs, excludeIDs []int6
 	if len(ids) > limit {
 		ids = ids[:limit]
 	}
-	return s.BooksByIDs(ctx, ids)
+	return s.BooksByIDs(ctx, ids, libraryID)
 }
 
 // NormalizeISBN keeps only digits and X (the ISBN-10 check character).
@@ -194,12 +223,13 @@ func LooksLikeISBN(query string) bool {
 }
 
 // SearchByISBN finds books by their stored ISBN.
-func (s *Store) SearchByISBN(ctx context.Context, isbn string) ([]Book, error) {
+func (s *Store) SearchByISBN(ctx context.Context, isbn string, libraryIDs ...string) ([]Book, error) {
 	n := NormalizeISBN(isbn)
 	if n == "" {
 		return nil, nil
 	}
-	return s.queryBooks(ctx, `b.isbn = ?`, `b.title`, 50, 0, n)
+	where, args := addLibraryScope(`b.isbn = ?`, "b", scopeLibraryID(libraryIDs), []any{n})
+	return s.queryBooks(ctx, where, `b.title`, 50, 0, args...)
 }
 
 // SetBookISBN records a book's ISBN (lazy indexing on view).
