@@ -131,13 +131,17 @@ for migration and identity boundaries; the complete feature is not yet available
 The foundation preserves existing catalog IDs and legacy root configuration;
 file serving can also resolve explicitly owned library roots independently.
 An internal disk-backed snapshot publisher stages and atomically applies one
-library's records; source adapters and management controls are still in progress.
+library's records; both source adapters are available internally.
 Missing books and disabled libraries are excluded from ordinary book results and
 file serving, while their catalog records and personal references are retained.
 The new INPX staging adapter validates complete index snapshots and preserves
-exact record identities; wiring it into existing import controls is still pending.
+exact record identities. Existing web and CLI imports now publish the default
+library atomically; failed replacements retain the current catalog.
 The recursive folder adapter reads supported files without modifying the source,
 extracts FB2/EPUB metadata, and detects path/content changes using full SHA-256.
+The admin API can register, rename, enable/disable and manually update saved
+libraries. Registration does not scan files. Management and browsing UI work
+is tracked in the PR series.
 
 Polka understands `.inpx` index files (MyHomeLib / Flibusta format) — both
 from the command line and from the web UI (*Manage → Import*):
