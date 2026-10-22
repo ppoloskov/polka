@@ -373,6 +373,8 @@ type importState struct {
 	phase     string
 	processed int
 	stats     store.ImportStats
+	libraryID string
+	update    store.UpdateStats
 	err       string
 	warning   string // non-fatal, e.g. archives not found under the library dir
 }
@@ -387,6 +389,11 @@ func (st *importState) snapshot() map[string]any {
 		"books":     st.stats.Books,
 		"authors":   st.stats.Authors,
 		"series":    st.stats.Series,
+		"libraryId": st.libraryID,
+		"added":     st.update.Added,
+		"removed":   st.update.Removed,
+		"changed":   st.update.Changed,
+		"unchanged": st.update.Unchanged,
 		"error":     st.err,
 		"warning":   st.warning,
 	}
@@ -406,6 +413,8 @@ func (s *Server) handleImportInpx(w http.ResponseWriter, r *http.Request) {
 	s.imp.running = true
 	s.imp.phase = "starting"
 	s.imp.processed = 0
+	s.imp.libraryID = "legacy"
+	s.imp.update = store.UpdateStats{}
 	s.imp.err = ""
 	s.imp.warning = ""
 	s.imp.stats = store.ImportStats{}
@@ -487,7 +496,7 @@ func (s *Server) runImport(inpxPath, sourceName string, cleanup bool) {
 		s.imp.mu.Unlock()
 	}
 
-	finish := func(stats store.ImportStats, err error) {
+	finish := func(update store.UpdateStats, stats store.ImportStats, err error) {
 		s.imp.mu.Lock()
 		defer s.imp.mu.Unlock()
 		s.imp.running = false
@@ -498,15 +507,19 @@ func (s *Server) runImport(inpxPath, sourceName string, cleanup bool) {
 			return
 		}
 		s.imp.phase = "done"
+		s.imp.update = update
 		s.imp.stats = stats
 		s.log.Info("web import done", "books", stats.Books, "duration", stats.Duration)
 	}
 
-	_, stats, err := importer.UpdateInpx(ctx, s.log, s.st, "legacy", inpxPath, s.cfg.DataDir, sourceName, setPhase, false)
+	update, stats, err := importer.UpdateInpx(ctx, s.log, s.st, "legacy", inpxPath, s.cfg.DataDir, sourceName, setPhase, false)
 	if err == nil && s.lib != nil {
 		s.lib.ResetCovers()
 	}
-	finish(stats, err)
+	if err == nil {
+		s.invalidateGenreCounts()
+	}
+	finish(update, stats, err)
 	if err == nil {
 		s.warnIfArchivesMissing(ctx)
 		s.rematchCollections(ctx)

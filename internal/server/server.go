@@ -128,8 +128,32 @@ func New(cfg *config.Config, log *slog.Logger, st *store.Store, lib *library.Lib
 				s.sync.Proxy(w, r)
 			})
 		}
+		if !s.demoMode() {
+			for _, p := range []string{
+				"GET /admin/libraries",
+				"POST /admin/libraries",
+				"POST /admin/libraries/{id}",
+				"POST /admin/libraries/{id}/update",
+				"GET /api/v1/libraries",
+			} {
+				mux.HandleFunc(p, func(w http.ResponseWriter, r *http.Request) {
+					if !s.sync.Online() {
+						http.Error(w, "server unavailable (offline)", http.StatusServiceUnavailable)
+						return
+					}
+					s.sync.Proxy(w, r)
+				})
+			}
+		}
 	} else {
 		// Library management (administrator only; absent in demo mode)
+		if !s.demoMode() {
+			mux.HandleFunc("GET /admin/libraries", s.adminOnly(s.handleAdminLibraries))
+			mux.HandleFunc("POST /admin/libraries", s.adminOnly(s.handleLibraryCreate))
+			mux.HandleFunc("POST /admin/libraries/{id}", s.adminOnly(s.handleLibraryUpdate))
+			mux.HandleFunc("POST /admin/libraries/{id}/update", s.adminOnly(s.handleLibraryUpdateStart))
+			mux.HandleFunc("GET /api/v1/libraries", s.protected(s.handlePublicLibraries))
+		}
 		if !s.demoMode() {
 			mux.HandleFunc("POST /admin/books/upload", s.adminOnly(s.handleBookUpload))
 			mux.HandleFunc("POST /admin/books/{id}/delete", s.adminOnly(s.handleBookSetDeleted(true)))

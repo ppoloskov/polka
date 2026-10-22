@@ -84,3 +84,13 @@ uploaded indexes, commit source provenance atomically, and reset cover caches.
 Explicit successful replacement conservatively retires unknown legacy catalog
 rows without reassigning their personal references; hashed uploads remain.
 Management API work is pending in separate files; never stage it with adapters.
+
+Legacy adapters exact `e812276` passed all Go tests/vet/both builds and native
+baseline-to-candidate upgrades with unchanged paths/config. Evidence:
+`/private/tmp/polka-validation/wp4b-native-bmorgdwb`. Existing IDs/state survived;
+upload101 avoided orphan100; corrupt CLI replacement preserved catalog/provenance;
+explicit replacement retained oldID1 missing and allocated102, stable on repeat.
+Management API reviewed: saved-source manual updates, rename/enable, protected
+pathless list, existing status plus target/diff counters. Review fixed silent
+legacy-update success and stale genre counts. Isolated focused suites/vet pass
+in management-preview; exact full validation remains required after commit.

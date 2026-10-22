@@ -14,7 +14,7 @@ architect reviews scope/style/behavior before Git publication.
 | WP3 | Disk-backed snapshot staging and atomic target-only publication; missing separate from admin deleted; preserve personal state and other libraries | WP1 | diff/idempotence/remove/reappear/admin hidden, rollback/error/cancel/restart, no global search/index clearing | Published PR #3 |
 | WP3b | Availability filtering before exposing update entrypoints; missing/disabled excluded from normal counts, browsing, files and cached chapters | WP2, WP3 | missing/disabled counts/search/author/series/file/recommendations, reader-cache removal and restore | Published PR #4 |
 | WP4a | Strict complete INPX staging and exact immutable record keys | WP3 | owned-copy stability, same/changed/source-deleted records, malformed/duplicate/corrupt input | Published PR #5 |
-| WP4b | Saved-source updater and legacy CLI/web import adapters over same engine | WP3b, WP4a | path/upload/default target, failed replace preserves data, empty guard, unchanged old contracts | Reviewed; commit and exact upgrade validation next |
+| WP4b | Saved-source updater and legacy CLI/web import adapters over same engine | WP3b, WP4a | path/upload/default target, failed replace preserves data, empty guard, unchanged old contracts | Published PR #7; exact checks and native upgrade pass |
 | WP5 | Recursive folder adapter, full-byte hashes, existing metadata parsers/fallback | WP2, WP3 | recursive add/change/remove, duplicate copies, symlinks/traversal/unreadable/unstable inputs, realistic source tree | Exact commit validated; PR #6 publication underway |
 | WP6 | Admin libraries UI/API/CLI, combined browsing/filter/source badges and unavailable personal entries | WP4, WP5 | admin authorization/demo/connected proxy, counts/pagination/filter/bulk, existing UI tests/build and real HTTP workflows | Pending |
 | WP7 | Upgrade/restart and end-to-end acceptance, final compatibility cleanup/docs | All | previous-version data and unchanged config/clients; both source types; source failure; repeated updates; full Go/Node/build/vet; actual container proof where available | Pending |
@@ -132,3 +132,9 @@ cover caches revalidate. Unknown legacy catalog rows become unavailable only on
 explicit successful replacement; hashed uploads remain. Failed replacement and
 source/provenance rollback tests pass. Exact commit and native upgrade checks
 remain required before publication. Management API work is separate.
+
+WP4b exact `e812276` passed full tests/vet/both builds and native unchanged-config
+upgrade, repeated restart, failed replace rollback and successful explicit
+replacement with retained unavailable references. Management API is reviewed
+and passed isolated focused suites/vet; commit/full validation next. Catalog
+filtering and admin UI are separate packages in progress.
