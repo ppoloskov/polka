@@ -147,21 +147,10 @@ func (s *Server) handleLibraryUpdateStart(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	s.imp.mu.Lock()
-	if s.imp.running {
-		s.imp.mu.Unlock()
+	if !s.startImport(item.ID) {
 		http.Error(w, "import is already running", http.StatusConflict)
 		return
 	}
-	s.imp.running = true
-	s.imp.phase = "starting"
-	s.imp.processed = 0
-	s.imp.stats = store.ImportStats{}
-	s.imp.libraryID = item.ID
-	s.imp.update = store.UpdateStats{}
-	s.imp.err = ""
-	s.imp.warning = ""
-	s.imp.mu.Unlock()
 
 	go s.runLibraryUpdate(item, req.AllowEmpty)
 	writeJSON(w, map[string]any{"started": true})
@@ -169,12 +158,7 @@ func (s *Server) handleLibraryUpdateStart(w http.ResponseWriter, r *http.Request
 
 func (s *Server) runLibraryUpdate(item *store.Library, allowEmpty bool) {
 	ctx := context.Background()
-	progress := func(phase string, processed int) {
-		s.imp.mu.Lock()
-		s.imp.phase = phase
-		s.imp.processed = processed
-		s.imp.mu.Unlock()
-	}
+	progress := s.importProgress()
 	var stats store.ImportStats
 	var update store.UpdateStats
 	var updateErr error
@@ -197,18 +181,14 @@ func (s *Server) runLibraryUpdate(item *store.Library, allowEmpty bool) {
 		s.resetLibraryCovers(item)
 		s.invalidateGenreCounts()
 	}
-	s.imp.mu.Lock()
-	s.imp.running = false
+	s.finishImport(update, stats, updateErr)
 	if updateErr != nil {
-		s.imp.phase = "error"
-		s.imp.err = updateErr.Error()
 		s.log.Error("library update", "library", item.ID, "error", updateErr)
-	} else {
-		s.imp.phase = "done"
-		s.imp.stats = stats
-		s.imp.update = update
 	}
-	s.imp.mu.Unlock()
+	if updateErr == nil && item.ID == "legacy" {
+		s.warnIfArchivesMissing(ctx)
+		s.rematchCollections(ctx)
+	}
 }
 
 func (s *Server) invalidateGenreCounts() {

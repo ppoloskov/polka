@@ -27,7 +27,10 @@ See `docs/specs/planned/multiple-libraries-work-queue.md` for the staged PR seri
 Architect reviews each diff and evidence; the Git agent publishes reviewed
 branches to `ppoloskov/polka`. No merge is authorized.
 
-Library management reuses the existing import mutex/status. Source paths and
+Library management reuses the existing import mutex/status and lifecycle helpers.
+Successful saved legacy updates must retain the existing web import archive
+warning and collection-rematch hooks. Keep OPDS combined; do not add unused
+store scope options for deferred OPDS filtering. Source paths and
 kinds are fixed after registration; changing a root requires a new namespace.
 Keep public library metadata free of server paths. Successful updates and
 enable/disable changes must invalidate genre counts; update cover caches by owner.

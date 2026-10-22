@@ -55,7 +55,7 @@ func collectionJSON(c collections.Collection) map[string]any {
 }
 
 // collectionShelves returns the home page shelves: collections with at least one match.
-func (s *Server) collectionShelves(r *http.Request, limit int, libraryIDs ...string) []map[string]any {
+func (s *Server) collectionShelves(r *http.Request, limit int, libraryID string) []map[string]any {
 	if s.cols == nil {
 		return nil
 	}
@@ -65,10 +65,6 @@ func (s *Server) collectionShelves(r *http.Request, limit int, libraryIDs ...str
 		return nil
 	}
 	disabled := s.disabledOrigins(r.Context())
-	libraryID := ""
-	if len(libraryIDs) > 0 {
-		libraryID = libraryIDs[0]
-	}
 	var out []map[string]any
 	for _, c := range list {
 		if c.Matched == 0 || disabled[c.Origin] {
@@ -98,7 +94,7 @@ func (s *Server) collectionShelves(r *http.Request, limit int, libraryIDs ...str
 }
 
 // collectionShelfBooks returns a page of the collection's books in list order.
-func (s *Server) collectionShelfBooks(ctx context.Context, slug string, limit, offset int, libraryIDs ...string) ([]store.Book, string, error) {
+func (s *Server) collectionShelfBooks(ctx context.Context, slug string, limit, offset int, libraryID string) ([]store.Book, string, error) {
 	if s.cols == nil {
 		return nil, "", store.ErrNotFound
 	}
@@ -108,10 +104,6 @@ func (s *Server) collectionShelfBooks(ctx context.Context, slug string, limit, o
 	}
 	if err != nil {
 		return nil, "", err
-	}
-	libraryID := ""
-	if len(libraryIDs) > 0 {
-		libraryID = libraryIDs[0]
 	}
 	if libraryID == "" {
 		ids, err := s.cols.BookIDs(ctx, c.ID, limit, offset)

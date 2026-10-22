@@ -99,12 +99,11 @@ func (s *Store) migrate() error {
 	return tx.Commit()
 }
 
-func (s *Store) BookCount(ctx context.Context, libraryIDs ...string) (int, error) {
+func (s *Store) BookCount(ctx context.Context) (int, error) {
 	var n int
-	where, args := addLibraryScope(`b.deleted = 0 AND b.missing = 0 AND l.enabled = 1`, "b", scopeLibraryID(libraryIDs), nil)
 	err := s.db.QueryRowContext(ctx, `
 		SELECT count(*) FROM books b JOIN libraries l ON l.id = b.library_id
-		WHERE `+where, args...).Scan(&n)
+		WHERE b.deleted = 0 AND b.missing = 0 AND l.enabled = 1`).Scan(&n)
 	return n, err
 }
 

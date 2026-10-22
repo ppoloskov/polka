@@ -138,6 +138,8 @@ are manual. The page reports additions/removals and keeps the last published
 catalog if the source cannot be read or parsed. Empty updates require explicit
 confirmation. Source files are never modified. New source paths must be visible
 inside the container; existing installations need no new mounts or settings.
+Updating the default library also refreshes archive warnings and themed collection
+matches, as the existing web import does.
 
 Browse all enabled libraries or select one in the catalog. Copies in different
 libraries have separate entries and Polka reading state. Removed books remain

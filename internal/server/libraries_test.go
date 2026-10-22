@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/vestigiumincaligne/polka/internal/collections"
 )
 
 type managedBook struct {
@@ -180,7 +182,7 @@ func TestLegacyLibraryUpdateRequiresSavedSourcePath(t *testing.T) {
 }
 
 func TestLegacyLibraryUpdateUsesSavedInpxAndReportsDiff(t *testing.T) {
-	ts, admin, st, _ := newManageServerDir(t)
+	ts, admin, st, dir := newManageServerDir(t)
 	status, result := postImportForm(t, admin, ts.URL+"/admin/import/inpx", map[string]string{"replace": "1"}, "saved.inpx", webImportFixture(t, "Saved source book"))
 	if status != http.StatusOK || result["started"] != true {
 		t.Fatalf("initial legacy import = %d %v", status, result)
@@ -195,6 +197,38 @@ func TestLegacyLibraryUpdateUsesSavedInpxAndReportsDiff(t *testing.T) {
 	if err := st.DB().QueryRow(`SELECT id FROM books WHERE library_id='legacy' AND deleted=0`).Scan(&originalID); err != nil {
 		t.Fatal(err)
 	}
+	legacy, err := st.Library(context.Background(), "legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := legacy.SourcePath
+	cs, err := collections.Open(filepath.Join(dir, "collections.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	collectionFile, err := collections.Parse(strings.NewReader(`{"slug":"saved-source","title":"Saved source","items":[{"title":"Saved source book","author":"Example Writer"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.Import(context.Background(), collectionFile); err != nil {
+		t.Fatal(err)
+	}
+	collection, err := cs.Get(context.Background(), "saved-source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.Match(context.Background(), st, collection.Slug); err != nil {
+		t.Fatal(err)
+	}
+	matched, err := cs.BookIDs(context.Background(), collection.ID, 10, 0)
+	if err != nil || len(matched) != 1 || matched[0] != originalID {
+		t.Fatalf("initial collection book IDs = %v, err %v; want %d", matched, err, originalID)
+	}
+	changedSource := webImportFixture(t, "Changed saved source book")
+	if err := os.WriteFile(sourcePath, changedSource, 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	resp := postJSON(t, admin, ts.URL+"/admin/libraries/legacy/update", map[string]any{})
 	defer resp.Body.Close()
@@ -204,14 +238,29 @@ func TestLegacyLibraryUpdateUsesSavedInpxAndReportsDiff(t *testing.T) {
 		t.Fatalf("saved legacy update = %d %v", resp.StatusCode, started)
 	}
 	updated := waitForImportStatus(t, admin, ts.URL+"/admin/import/status")
+	deadline := time.Now().Add(5 * time.Second)
+	for updated["warning"] == "" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		updated = libraryJSON(t, admin, ts.URL+"/admin/import/status")
+	}
 	if updated["phase"] != "done" || updated["libraryId"] != "legacy" ||
-		updated["added"].(float64) != 0 || updated["removed"].(float64) != 0 ||
-		updated["changed"].(float64) != 0 || updated["unchanged"].(float64) != 1 {
+		updated["added"].(float64) != 1 || updated["removed"].(float64) != 1 ||
+		updated["changed"].(float64) != 0 || updated["unchanged"].(float64) != 0 {
 		t.Fatalf("saved legacy update did not report expected diff: %v", updated)
 	}
+	if warning, _ := updated["warning"].(string); warning == "" {
+		t.Fatalf("saved legacy update did not rerun the missing-archive warning hook: %v", updated)
+	}
 	var currentID int64
-	if err := st.DB().QueryRow(`SELECT id FROM books WHERE library_id='legacy' AND deleted=0`).Scan(&currentID); err != nil || currentID != originalID {
-		t.Fatalf("legacy identity after saved-source update = %d (err %v), want %d", currentID, err, originalID)
+	if err := st.DB().QueryRow(`SELECT id FROM books WHERE library_id='legacy' AND deleted=0 AND missing=0`).Scan(&currentID); err != nil || currentID == originalID {
+		t.Fatalf("legacy identity after saved-source update = %d (err %v), want a new ID after changed metadata", currentID, err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for matched, err = cs.BookIDs(context.Background(), collection.ID, 10, 0); err == nil && len(matched) != 0 && time.Now().Before(deadline); matched, err = cs.BookIDs(context.Background(), collection.ID, 10, 0) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil || len(matched) != 0 {
+		t.Fatalf("collection IDs after changed title = %v, err %v; want unmatched old title", matched, err)
 	}
 }
 

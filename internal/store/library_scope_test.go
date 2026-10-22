@@ -79,14 +79,6 @@ func TestLibraryScopeFiltersCatalogBeforePaging(t *testing.T) {
 	if err != nil || len(series) != 1 || series[0].Books != 1 {
 		t.Errorf("scoped series search = %+v, %v; want count 1", series, err)
 	}
-	byPrefix, err := st.AuthorsByPrefix(ctx, "Scope", "Scopz", 10, 0, first.ID)
-	if err != nil || len(byPrefix) != 1 || byPrefix[0].Books != 1 {
-		t.Errorf("scoped author prefix = %+v, %v; want count 1", byPrefix, err)
-	}
-	seriesPrefix, err := st.SeriesByPrefix(ctx, "Scope", "Scopz", 10, 0, first.ID)
-	if err != nil || len(seriesPrefix) != 1 || seriesPrefix[0].Books != 1 {
-		t.Errorf("scoped series prefix = %+v, %v; want count 1", seriesPrefix, err)
-	}
 	if len(series) > 0 {
 		books, _, err := st.SeriesBooks(ctx, series[0].ID, first.ID)
 		if err != nil || len(books) != 1 || books[0].ID != firstID {
@@ -97,14 +89,8 @@ func TestLibraryScopeFiltersCatalogBeforePaging(t *testing.T) {
 	if err != nil || len(shelf) != 1 || shelf[0].ID != firstID {
 		t.Errorf("scoped genre page = %+v, %v; want first book %d", shelf, err, firstID)
 	}
-	if count, err := st.BookCount(ctx, first.ID); err != nil || count != 1 {
-		t.Errorf("scoped BookCount = %d, %v; want 1", count, err)
-	}
 	if books, err := st.BooksByIDs(ctx, []int64{secondID, firstID}, first.ID); err != nil || len(books) != 1 || books[0].ID != firstID {
 		t.Errorf("scoped BooksByIDs = %+v, %v; want only %d in request order", books, err, firstID)
-	}
-	if books, err := st.SearchBooks(ctx, "Scope Needle", 1, 0, first.ID); err != nil || len(books) != 1 || books[0].ID != firstID {
-		t.Errorf("scoped paged search = %+v, %v; want %d", books, err, firstID)
 	}
 	if books, err := st.SimilarBooks(ctx, firstID, 10, first.ID); err != nil || len(books) != 0 {
 		t.Errorf("scoped similar books = %+v, %v; want no cross-library candidate", books, err)
@@ -137,9 +123,6 @@ func TestLibraryScopeFiltersCatalogBeforePaging(t *testing.T) {
 		if err != nil || len(books) != 0 {
 			t.Errorf("search scope %q = %+v, %v; want no visible books", scope, books, err)
 		}
-	}
-	if got, err := st.BookCount(ctx, disabled.ID); err != nil || got != 0 {
-		t.Errorf("disabled BookCount = %d, %v; want zero", got, err)
 	}
 	if books, err := st.SearchTitles(ctx, "Scope Needle", 10, first.ID); err != nil || len(books) == 0 || books[0].ID == disabledID || books[0].ID == secondID {
 		t.Errorf("first library leaked another namespace: %+v, %v", books, err)
@@ -181,7 +164,7 @@ func TestRankedSearchLibraryScopeIsAppliedBeforeLimitInLargeCatalog(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	books, err := st.SearchBooks(ctx, "Rankneedle", 1, 0, local.ID)
+	books, err := st.SearchTitles(ctx, "Rankneedle", 1, local.ID)
 	if err != nil || len(books) != 1 || books[0].ID != localID {
 		t.Fatalf("large scoped search = %+v, %v; want local book %d", books, err, localID)
 	}

@@ -75,13 +75,4 @@ export const fetchSettings = () => api.getJson("admin/settings");
 
 export const testSmtp = () => post("admin/smtp/test");
 
-export const saveSettings = async (settings) => {
-  const res = await fetch(api.buildUrl("admin/settings"), {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(settings),
-  });
-  if (!res.ok) throw new Error(`Request failed: ${res.status}`);
-  return res.json();
-};
+export const saveSettings = (settings) => postJson("admin/settings", settings);
