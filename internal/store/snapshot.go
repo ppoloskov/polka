@@ -197,9 +197,6 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 	if staged == 0 && !allowEmpty {
 		return stats, errors.New("empty library snapshot is not allowed")
 	}
-	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_books_library_source ON books(library_id, source_key)`); err != nil {
-		return stats, err
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return stats, err
@@ -361,12 +358,23 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 			return stats, err
 		}
 	}
+	// Covers can change on any committed publish (the server resets the
+	// cover cache), so bump the per-library cover generation backing the
+	// cover ETag validator regardless of the diff content.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO meta (key, value) VALUES (?, '1')
+		ON CONFLICT (key) DO UPDATE SET value = CAST(CAST(meta.value AS INTEGER) + 1 AS TEXT)`, "library."+libraryID+".cover_gen"); err != nil {
+		return stats, err
+	}
 	if err := ctx.Err(); err != nil {
 		return stats, err
 	}
 	if err := tx.Commit(); err != nil {
 		return stats, err
 	}
+	// Refresh planner statistics after a large publish. The catalog is
+	// already committed, so an ANALYZE failure is not fatal.
+	_, _ = s.db.ExecContext(ctx, `ANALYZE`)
 	return stats, nil
 }
 

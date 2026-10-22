@@ -237,24 +237,19 @@ func (s *Store) rankedSearch(ctx context.Context, ftsQ string, limit, offset int
 		`SELECT count(*) FROM book_search WHERE book_search MATCH ?`, ftsQ).Scan(&matches); err != nil {
 		return nil, err
 	}
-	innerScope, outerScope := "", ""
+	innerScope := ""
 	args := []any{ftsQ, limit, offset}
 	if libraryID != "" {
-		innerScope, outerScope = ` AND b.library_id = ?`, ` AND b.library_id = ?`
-		args = []any{ftsQ, libraryID, limit, offset, libraryID}
+		innerScope = ` AND b.library_id = ?`
+		args = []any{ftsQ, libraryID, limit, offset}
 	}
 	if matches > 5000 {
-		args = []any{ftsQ, limit, offset}
-		if libraryID != "" {
-			args = []any{ftsQ, libraryID, limit, offset}
-		}
 		return s.scanBooks(ctx, `SELECT`+bookColumns+`
 			FROM (SELECT book_search.rowid FROM book_search JOIN books b ON b.id = book_search.rowid
 			      WHERE book_search MATCH ? AND b.deleted = 0 AND `+availableBook+innerScope+` LIMIT ? OFFSET ?) m
 			JOIN books b ON b.id = m.rowid
 			LEFT JOIN series s ON s.id = b.series_id
 			JOIN libraries l ON l.id = b.library_id
-			WHERE b.deleted = 0 AND `+availableBook+`
 			ORDER BY b.lib_rate DESC, b.title`, args...)
 	}
 	return s.scanBooks(ctx, `SELECT`+bookColumns+`
@@ -263,7 +258,6 @@ func (s *Store) rankedSearch(ctx context.Context, ftsQ string, limit, offset int
 		JOIN books b ON b.id = m.rowid
 		LEFT JOIN series s ON s.id = b.series_id
 		JOIN libraries l ON l.id = b.library_id
-		WHERE b.deleted = 0 AND `+availableBook+outerScope+`
 		ORDER BY m.rank, b.lib_rate DESC, b.id`, args...)
 }
 

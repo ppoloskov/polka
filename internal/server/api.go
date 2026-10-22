@@ -457,8 +457,18 @@ func (s *Server) handleCover(w http.ResponseWriter, r *http.Request) {
 	if f == nil {
 		return
 	}
-	lib := s.bookLibraryOr404(w, r, f.ID)
-	if lib == nil {
+	lib, libID, err := s.bookLibraryOwner(r.Context(), f.ID)
+	if err != nil {
+		s.apiError(w, err)
+		return
+	}
+	gen := s.st.GetMeta(r.Context(), "library."+libID+".cover_gen", "0")
+	etag := "\"" + strconv.FormatInt(f.ID, 10) + "-" + gen + "\""
+	// Exact match or "*" — weak validators and list forms are not parsed.
+	if inm := r.Header.Get("If-None-Match"); inm == etag || inm == "*" {
+		w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+		w.Header().Set("ETag", etag)
+		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	data, mime, err := lib.Cover(f.ID, f.Folder, f.File, f.Ext)
@@ -471,7 +481,8 @@ func (s *Server) handleCover(w http.ResponseWriter, r *http.Request) {
 		mime = "image/jpeg"
 	}
 	w.Header().Set("Content-Type", mime)
-	w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
+	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	w.Header().Set("ETag", etag)
 	w.Write(data)
 }
 
