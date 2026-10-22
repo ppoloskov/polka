@@ -1,7 +1,33 @@
 package store
 
 // The schema version is stored in PRAGMA user_version.
-const schemaVersion = 5
+const schemaVersion = 6
+
+// v6: persistent library ownership and a monotonic public book-ID floor.
+const schemaV6 = `
+CREATE TABLE IF NOT EXISTS libraries (
+	id          TEXT PRIMARY KEY,
+	name        TEXT NOT NULL,
+	kind        TEXT NOT NULL,
+	root        TEXT NOT NULL DEFAULT '',
+	source_path TEXT NOT NULL DEFAULT '',
+	enabled     INTEGER NOT NULL DEFAULT 1
+);
+ALTER TABLE books ADD COLUMN library_id TEXT NOT NULL DEFAULT 'legacy';
+ALTER TABLE books ADD COLUMN missing INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE books ADD COLUMN source_key TEXT NOT NULL DEFAULT '';
+INSERT INTO libraries (id, name, kind, root, source_path, enabled)
+SELECT 'legacy', coalesce((SELECT value FROM meta WHERE key = 'collection_name' AND trim(value) != ''), 'Library'), 'legacy', '', '', 1
+WHERE NOT EXISTS (SELECT 1 FROM libraries WHERE id = 'legacy');
+INSERT INTO meta (key, value)
+VALUES ('book_id_high_water', CAST(max(
+	coalesce((SELECT max(id) FROM books), 0),
+	coalesce((SELECT max(book_id) FROM book_digests), 0)
+) AS TEXT))
+ON CONFLICT (key) DO UPDATE SET value = CAST(max(
+	CAST(meta.value AS INTEGER), CAST(excluded.value AS INTEGER)
+) AS TEXT);
+`
 
 // v5: a book may belong to several series. Keep books.series_id/series_num
 // as the primary series for existing cards and recommendations.

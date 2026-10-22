@@ -41,7 +41,10 @@ func (s *Store) migrate() error {
 	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version >= schemaVersion {
+	if version > schemaVersion {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersion)
+	}
+	if version == schemaVersion {
 		return nil
 	}
 	tx, err := s.db.Begin()
@@ -59,6 +62,7 @@ func (s *Store) migrate() error {
 				return err
 			}
 		}
+		version = 5
 	}
 	if version == 1 {
 		if _, err := tx.Exec(schemaV2); err != nil {
@@ -80,6 +84,12 @@ func (s *Store) migrate() error {
 	}
 	if version == 4 {
 		if _, err := tx.Exec(schemaV5); err != nil {
+			return err
+		}
+		version = 5
+	}
+	if version == 5 {
+		if _, err := tx.Exec(schemaV6); err != nil {
 			return err
 		}
 	}

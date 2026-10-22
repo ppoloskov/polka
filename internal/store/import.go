@@ -127,8 +127,8 @@ func (im *ImportSession) begin() error {
 		author:  prep(`INSERT INTO authors (last_name, first_name, middle_name) VALUES (?, ?, ?)`),
 		genre:   prep(`INSERT INTO genres (code) VALUES (?)`),
 		keyword: prep(`INSERT INTO keywords (name) VALUES (?)`),
-		book: prep(`INSERT INTO books (lib_id, title, series_id, series_num, folder_id, file, ext, size, lang, year, added, lib_rate, deleted)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		book: prep(`INSERT INTO books (id, lib_id, title, series_id, series_num, folder_id, file, ext, size, lang, year, added, lib_rate, deleted)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		bs: prep(`INSERT INTO book_series (book_id, series_id, series_num, position) VALUES (?, ?, ?, ?)`),
 		ba: prep(`INSERT OR IGNORE INTO book_authors (book_id, author_id) VALUES (?, ?)`),
 		bg: prep(`INSERT OR IGNORE INTO book_genres (book_id, genre_id) VALUES (?, ?)`),
@@ -189,14 +189,14 @@ func (im *ImportSession) Add(b *BookInput) error {
 		year = b.Year
 	}
 
-	res, err := im.stmts.book.Exec(b.LibID, b.Title, seriesID, seriesNum, folderID,
+	bookID, err := allocateBookID(im.ctx, im.tx)
+	if err != nil {
+		return fmt.Errorf("book %q ID: %w", b.Title, err)
+	}
+	_, err = im.stmts.book.Exec(bookID, b.LibID, b.Title, seriesID, seriesNum, folderID,
 		b.File, b.Ext, b.Size, b.Lang, year, b.Added, b.Rate, boolToInt(b.Deleted))
 	if err != nil {
 		return fmt.Errorf("book %q: %w", b.Title, err)
-	}
-	bookID, err := res.LastInsertId()
-	if err != nil {
-		return err
 	}
 
 	for position, ref := range series {

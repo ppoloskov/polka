@@ -88,6 +88,21 @@ func runServe(log *slog.Logger, args []string) error {
 	}
 	defer st.Close()
 
+	users, err := auth.Open(filepath.Join(cfg.DataDir, "users.db"))
+	if err != nil {
+		return fmt.Errorf("open users database: %w", err)
+	}
+	defer users.Close()
+
+	ctx := context.Background()
+	maxBookID, err := users.MaxBookID(ctx)
+	if err != nil {
+		return fmt.Errorf("read user book IDs: %w", err)
+	}
+	if err := st.ReserveBookIDs(ctx, maxBookID); err != nil {
+		return fmt.Errorf("reserve catalog book IDs: %w", err)
+	}
+
 	webFS, err := web.Dist()
 	if err != nil {
 		return fmt.Errorf("embedded frontend: %w", err)
@@ -110,14 +125,7 @@ func runServe(log *slog.Logger, args []string) error {
 		}
 	}
 
-	users, err := auth.Open(filepath.Join(cfg.DataDir, "users.db"))
-	if err != nil {
-		return fmt.Errorf("open users database: %w", err)
-	}
-	defer users.Close()
-
 	// First run: create an administrator with a random password.
-	ctx := context.Background()
 	if n, err := users.UsersCount(ctx); err != nil {
 		return err
 	} else if n == 0 {
@@ -224,8 +232,22 @@ func runImport(log *slog.Logger, args []string) error {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer st.Close()
+	users, err := auth.Open(filepath.Join(cfg.DataDir, "users.db"))
+	if err != nil {
+		return fmt.Errorf("open users database: %w", err)
+	}
+	defer users.Close()
 
-	stats, err := importer.ImportInpx(context.Background(), log, st, inpxPath, nil)
+	ctx := context.Background()
+	maxBookID, err := users.MaxBookID(ctx)
+	if err != nil {
+		return fmt.Errorf("read user book IDs: %w", err)
+	}
+	if err := st.ReserveBookIDs(ctx, maxBookID); err != nil {
+		return fmt.Errorf("reserve catalog book IDs: %w", err)
+	}
+
+	stats, err := importer.ImportInpx(ctx, log, st, inpxPath, nil)
 	if err != nil {
 		return err
 	}
