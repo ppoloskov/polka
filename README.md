@@ -134,7 +134,9 @@ Administrators can add named libraries in **Manage → Libraries**:
   subfolders. Symlinks are skipped; FB2 and EPUB metadata is extracted.
 
 Adding a library saves its configuration. Press **Update** to scan it; updates
-are manual. The page reports additions/removals and keeps the last published
+are manual and continue on the server if the page is refreshed. Catalog reads
+remain available until the complete update commits. The page reports
+additions/removals and keeps the last published
 catalog if the source cannot be read or parsed. Empty updates require explicit
 confirmation. Source files are never modified. New source paths must be visible
 inside the container; existing installations need no new mounts or settings.
