@@ -96,3 +96,19 @@ the remote BuildKit smoke verified version, unprivileged `polka`, health 200,
 creation of both databases, and graceful shutdown. Evidence:
 `/private/tmp/polka-validation/cleanup-image/{build-metadata.json,registry-verification.json}`.
 The latest tag and digest-pinned live deployment were unchanged.
+
+Browsing image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-2c29b9f`
+resolves to `sha256:fe863d2125934de86b4749ed40ac5ea2e738c2652351d76830ca85a1e1aad63b`
+for Linux/amd64, built from `codex/image-libraries-browsing` commit `2c29b9f`
+(PR #12 stack + upstream PRs #16/#17/#18). Evidence:
+`/private/tmp/polka-validation/browsing-image/build-metadata.json`.
+
+Series-group image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-48f397c`
+resolves to `sha256:34c5dfbd8e5e6cd3231ebea9e63852a9727ea546be373c2c970e5dfc6e5ccdec`
+for Linux/amd64, built from `codex/image-libraries-browsing` merge commit
+`48f397c` (browsing stack + PR #14 perf, PR #16 cover caching, PR #17 INPX
+series groups). Registry digest and config digest matched the build metadata.
+Evidence: `/private/tmp/polka-validation/series-image/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+The digest-pinned live deployment was unchanged by publishing.
