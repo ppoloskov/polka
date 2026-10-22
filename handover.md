@@ -7,9 +7,10 @@ PR series in the attached multiple-libraries worktree. The primary checkout has
 unrelated user work; preserve it. No PR merge is authorized.
 
 See `docs/specs/requests/multiple-libraries.md`, the compatibility contract and
-work queue for requirements, reviewed commits and delivery. Core, catalog scope and admin UI are published through PR #11. Consolidated
-reader UI, metadata reuse and scoped upload deduplication are implemented; final
-exact-head checks gate publication. Optional OPDS work was parked outside the checkout
+work queue for requirements, reviewed commits and delivery. Core through minimal reader completion is published through PR #12
+(`a6d31b6`). The follow-up cleanup shares update lifecycle handling, restores
+saved legacy update hooks and removes unused OPDS scope support and duplicated
+ISBN/JSON request paths. Optional OPDS work was parked outside the checkout
 at `/private/tmp/polka-validation/deferred-opds`; do not reintroduce it.
 
 ## Boundaries
@@ -61,3 +62,14 @@ its target, so named-library copies cannot block old upload workflows.
 Final management QA fixes passed 57 web tests/build: default-root warning is
 explicitly legacy-scoped, and named update status no longer appears in the old
 INPX import section. Status responses without libraryId remain compatible.
+
+Publishing uses the existing cluster BuildKit via temporary localhost forwarding;
+its public hostname does not resolve here. Zot HTTPS refused the builder
+connection; the existing internal Zot service is reachable. Build only the
+isolated worktree, publish a unique tag, and verify its registry manifest digest.
+Pushing an image does not change the digest-pinned live deployment.
+
+Cleanup validation passed full Go tests/vet, both binaries, 58 frontend tests
+and production build. Disposable HTTP acceptance: `final-libraries-wrbdlpkm`;
+unchanged-config native upgrade: `wp4b-native-9uh1r64z` (validation directory).
+The legacy warning/rematch regression passed ten consecutive runs.

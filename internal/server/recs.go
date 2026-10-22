@@ -59,16 +59,12 @@ func (s *Server) userSeeds(r *http.Request, userID int64) (seeds, exclude []int6
 }
 
 // recShelves builds the personal recommendation shelves.
-func (s *Server) recShelves(r *http.Request, userID int64, limit int, libraryIDs ...string) []map[string]any {
+func (s *Server) recShelves(r *http.Request, userID int64, limit int, libraryID string) []map[string]any {
 	seeds, exclude := s.userSeeds(r, userID)
 	if len(seeds) == 0 {
 		return nil
 	}
 	lang := reqLang(r)
-	libraryID := ""
-	if len(libraryIDs) > 0 {
-		libraryID = libraryIDs[0]
-	}
 	var shelves []map[string]any
 
 	if next, err := s.st.SeriesContinuations(r.Context(), seeds, exclude, limit, libraryID); err == nil && len(next) > 0 {
