@@ -175,6 +175,9 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 	if staged == 0 && !allowEmpty {
 		return stats, errors.New("empty library snapshot is not allowed")
 	}
+	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_books_library_source ON books(library_id, source_key)`); err != nil {
+		return stats, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return stats, err

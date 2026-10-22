@@ -97,6 +97,64 @@ func TestOpenAndRecords(t *testing.T) {
 	}
 }
 
+func TestRecordsStrictRejectsMalformedNonblankRows(t *testing.T) {
+	valid := line("Автор,Имя,", "genre", "Книга", "", "", "book", "10", "1", "0", "fb2", "2024-01-01", "ru", "0", "", "", "src")
+	path := writeInpx(t, map[string]string{"books.inp": valid + "\r\n" + "broken row\n" + valid})
+	f, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	seen := 0
+	err = f.RecordsStrict(func(*Record) error {
+		seen++
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "line 3") {
+		t.Fatalf("strict parse error = %v, want malformed line 3", err)
+	}
+	if seen != 1 {
+		t.Fatalf("strict parser yielded %d rows before failure, want 1", seen)
+	}
+
+	// Existing permissive callers keep their prior skip-malformed behavior.
+	seen = 0
+	if err := f.Records(func(*Record) error { seen++; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if seen != 2 {
+		t.Fatalf("permissive parser yielded %d rows, want 2", seen)
+	}
+
+	missingFile := line("Автор,Имя,", "genre", "Книга", "", "", "", "10", "1", "0", "fb2", "2024-01-01", "ru", "0", "", "", "src")
+	f, err = Open(writeInpx(t, map[string]string{"books.inp": missingFile}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := f.RecordsStrict(func(*Record) error { return nil }); err == nil || !strings.Contains(err.Error(), "TITLE and FILE") {
+		t.Fatalf("strict parser error for missing FILE = %v, want required TITLE and FILE", err)
+	}
+}
+
+func TestRecordsStrictAcceptsTrailingEmptyField(t *testing.T) {
+	row := line("Автор,Имя,", "genre", "Книга", "", "", "book", "10", "1", "0", "fb2", "2024-01-01", "ru", "0", "", "", "src")
+	f, err := Open(writeInpx(t, map[string]string{"books.inp": row}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	seen := 0
+	if err := f.RecordsStrict(func(*Record) error { seen++; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if seen != 1 {
+		t.Fatalf("strict parser yielded %d records, want 1", seen)
+	}
+}
+
 func TestOpenDefaultsAndErrors(t *testing.T) {
 	// No structure.info → the default field order; no collection.info → empty name.
 	path := writeInpx(t, map[string]string{

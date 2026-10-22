@@ -53,6 +53,16 @@ Admin restore keeps missing books out of FTS. Zero-book author/series dictionary
 listings retain legacy behavior. Exact-commit validation/publication next.
 INPX staging is reviewed separately; legacy adapter and folder tests are underway.
 
+Availability exact `1e7616b` passed full Go tests/vet/both builds. INPX source
+staging ready for its own commit: strict structural completeness on an owned copy,
+exact immutable `inpx:v1:` record keys, deletion excluded from key, duplicate
+poisoning, malformed/corrupt input rejection, and golden-key compatibility test.
+Metadata corrections conservatively remove/add; unchanged index records are not
+a claim of unchanged archive bytes. Added source-key index at first publication:
+20k temporary scale probe 1.86s initial, 3.77s repeat; query plan uses the index.
+Legacy adapter tests confirm destructive replace still needs fixing before public
+updates are accepted. Folder implementation is separate and uncommitted.
+
 Known legacy limit: lost/reused historical IDs and IDs retained only by offline
 clients cannot be reconstructed. Guarantee forward allocation safety from the
 known persisted migration boundary; do not expand sync protocols to claim repair.
