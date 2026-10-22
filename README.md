@@ -123,26 +123,37 @@ make build        # builds web UI + bin/polka + bin/polka-desktop
 
 ## Importing a large catalog
 
-Persistent INPX and recursive folder libraries are being developed as a small
-[PR series](docs/specs/planned/multiple-libraries-work-queue.md). Existing
-installations must keep working with unchanged configuration after an image
-upgrade. See the [compatibility contract](docs/specs/architecture/multiple-libraries-compatibility.md)
-for migration and identity boundaries; the complete feature is not yet available.
-The foundation preserves existing catalog IDs and legacy root configuration;
-file serving can also resolve explicitly owned library roots independently.
-An internal disk-backed snapshot publisher stages and atomically applies one
-library's records; both source adapters are available internally.
-Missing books and disabled libraries are excluded from ordinary book results and
-file serving, while their catalog records and personal references are retained.
-The new INPX staging adapter validates complete index snapshots and preserves
-exact record identities. Existing web and CLI imports now publish the default
-library atomically; failed replacements retain the current catalog.
-The recursive folder adapter reads supported files without modifying the source,
-extracts FB2/EPUB metadata, and detects path/content changes using full SHA-256.
-The admin API can register, rename, enable/disable and manually update saved
-libraries. Registration does not scan files. Catalog endpoints accept an optional `libraryId` filter; book cards include
-source metadata, and personal lists retain unavailable entries. Management and
-browsing UI work is tracked in the PR series.
+Existing installations keep their configuration, mounts, book IDs and personal
+state after upgrade. Migration creates a default library without scanning files.
+The default library continues to use `--library-dir` / `POLKA_LIBRARY_DIR`.
+
+Administrators can add named libraries in **Manage → Libraries**:
+
+- **INPX:** an absolute server path to the index plus a books/archive root.
+- **Folder:** an absolute server root containing supported book files, including
+  subfolders. Symlinks are skipped; FB2 and EPUB metadata is extracted.
+
+Adding a library saves its configuration. Press **Update** to scan it; updates
+are manual. The page reports additions/removals and keeps the last published
+catalog if the source cannot be read or parsed. Empty updates require explicit
+confirmation. Source files are never modified. New source paths must be visible
+inside the container; existing installations need no new mounts or settings.
+
+Browse all enabled libraries or select one in the catalog. Copies in different
+libraries have separate entries and Polka reading state. Removed books remain
+unavailable in personal lists/history. Disable a library to hide its books;
+changing its root or source kind requires a new library.
+
+Folder identity uses relative path plus the full file hash; moving or changing a
+file creates a new entry. INPX identity uses exact index records; metadata/locator
+changes also create new entries. Old personal references are retained, never
+reassigned by fuzzy matching. INPX updates do not hash the book dumps themselves.
+KOReader's existing digest-based sync cannot distinguish byte-identical copies;
+its bridge is outside the separate per-book Polka state guarantee.
+
+See the [compatibility contract](docs/specs/architecture/multiple-libraries-compatibility.md)
+and [PR series](docs/specs/planned/multiple-libraries-work-queue.md) for boundaries
+and validation evidence.
 
 Polka understands `.inpx` index files (MyHomeLib / Flibusta format) — both
 from the command line and from the web UI (*Manage → Import*):
@@ -160,9 +171,11 @@ Book files may sit in plain folders or inside **ZIP or 7z archives** (the
 usual Flibusta layout, e.g. `f.fb2-…​.7z`) — Polka reads them directly, no
 unpacking needed.
 
-Hundreds of thousands of records import in about a minute. Re-importing
-replaces the catalog but **never touches user data** — accounts, progress,
-ratings and lists live in a separate database and survive re-imports.
+Existing web and CLI imports update only the default library. Replacement stages
+the source before publication, so failures keep the current catalog. Accounts,
+progress, ratings and lists live in a separate database. On explicit replacement,
+legacy entries with unknown identity are retained as unavailable; they are never
+matched to new entries automatically.
 
 ## The desktop apps
 

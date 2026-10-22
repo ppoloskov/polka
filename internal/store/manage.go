@@ -197,14 +197,15 @@ func (s *Store) Clear(ctx context.Context) error {
 
 // FindByHash looks up a live book by an exact match of the file hash or
 // the normalized-text hash.
-func (s *Store) FindByHash(ctx context.Context, column, hash string) (*Book, error) {
+func (s *Store) FindByHash(ctx context.Context, column, hash string, libraryIDs ...string) (*Book, error) {
 	if hash == "" {
 		return nil, ErrNotFound
 	}
 	if column != "file_hash" && column != "content_hash" {
 		return nil, fmt.Errorf("bad hash column %q", column)
 	}
-	books, err := s.queryBooks(ctx, `b.`+column+` = ?`, "", 1, 0, hash)
+	where, args := addLibraryScope(`b.`+column+` = ?`, "b", scopeLibraryID(libraryIDs), []any{hash})
+	books, err := s.queryBooks(ctx, where, "", 1, 0, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -249,14 +250,13 @@ func normalizeForMatch(s string) string {
 
 // FindSimilar finds books with the same normalized title and at least
 // one shared author (by last name) — candidates for re-edition duplicates.
-func (s *Store) FindSimilar(ctx context.Context, title string, authorLastNames []string) ([]Book, error) {
+func (s *Store) FindSimilar(ctx context.Context, title string, authorLastNames []string, libraryIDs ...string) ([]Book, error) {
 	q := ftsQuery(title, "title")
 	if q == "" {
 		return nil, nil
 	}
-	candidates, err := s.queryBooks(ctx,
-		`b.id IN (SELECT rowid FROM book_search WHERE book_search MATCH ? LIMIT 50)`,
-		"", 0, 0, q)
+	where, args := addLibraryScope(`b.id IN (SELECT rowid FROM book_search WHERE book_search MATCH ?)`, "b", scopeLibraryID(libraryIDs), []any{q})
+	candidates, err := s.queryBooks(ctx, where, "", 50, 0, args...)
 	if err != nil {
 		return nil, err
 	}

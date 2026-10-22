@@ -11,6 +11,7 @@ const BookCard = ({ book, size = "md" }) => {
   if (!book) return null;
 
   const { BookID, Title, AuthorsNames, SeriesTitle, SeqNumber, Year, LibRate, ReadingProgress } = book;
+  const unavailable = book.Available === false;
 
   const initials = (Title || "").trim().slice(0, 2).toUpperCase();
   const seriesLabel =
@@ -20,6 +21,13 @@ const BookCard = ({ book, size = "md" }) => {
 
   return (
     <article className={`book-card book-card--${size}`}>
+      {unavailable ? (
+        <div className="book-card__cover-link">
+          <div className="book-card__cover">
+            <div className="book-card__cover-fallback"><span>{initials || "?"}</span></div>
+          </div>
+        </div>
+      ) : (
       <Link to={`/book/${BookID}`} className="book-card__cover-link" aria-label={Title}>
         <div className="book-card__cover">
           {coverFailed ? (
@@ -49,17 +57,20 @@ const BookCard = ({ book, size = "md" }) => {
           )}
         </div>
       </Link>
+      )}
 
       <div className="book-card__meta">
-        <Link to={`/book/${BookID}`} className="book-card__title" title={Title}>
-          {Title}
-        </Link>
+        {unavailable ? <span className="book-card__title">{Title}</span> : (
+          <Link to={`/book/${BookID}`} className="book-card__title" title={Title}>{Title}</Link>
+        )}
         {AuthorsNames && (
           <div className="book-card__author" title={AuthorsNames}>
             {AuthorsNames}
           </div>
         )}
         {seriesLabel && <div className="book-card__series">{seriesLabel}</div>}
+        {book.LibraryName && <div className="book-card__series">{book.LibraryName}</div>}
+        {unavailable && <div className="book-card__series">{t("library.unavailable")}</div>}
       </div>
     </article>
   );

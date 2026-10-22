@@ -18,7 +18,7 @@ const KIND_LABEL = () => ({
   shelf: t("nav.catalog"),
 });
 
-const BookListPage = ({ kind }) => {
+const BookListPage = ({ kind, selectedLibraryId = "" }) => {
   const params = useParams();
   const id =
     kind === "author" ? params.authorId : kind === "series" ? params.seriesId : params.shelfId;
@@ -45,7 +45,9 @@ const BookListPage = ({ kind }) => {
     setResolvedTitle("");
     setHasMore(false);
     setNextOffset(0);
-    const params = kind === "shelf" ? { shelfId: id } : { selectedItemID: id };
+    const params = kind === "shelf"
+      ? { shelfId: id, libraryId: selectedLibraryId }
+      : { selectedItemID: id, libraryId: selectedLibraryId };
     fetcher(params)
       .then((res) => {
         if (cancelled) return;
@@ -61,7 +63,7 @@ const BookListPage = ({ kind }) => {
     return () => {
       cancelled = true;
     };
-  }, [id, kind]);
+  }, [id, kind, selectedLibraryId]);
 
   const sortedBooks =
     kind === "series"
@@ -78,7 +80,7 @@ const BookListPage = ({ kind }) => {
   const loadMore = () => {
     if (kind !== "shelf" || loadingMore || !hasMore) return;
     setLoadingMore(true);
-    fetchShelfBooks({ shelfId: id, offset: nextOffset })
+    fetchShelfBooks({ shelfId: id, offset: nextOffset, libraryId: selectedLibraryId })
       .then((res) => {
         const chunk = res?.titlesList ?? [];
         setBooks((prev) => [...prev, ...chunk]);
@@ -103,7 +105,7 @@ const BookListPage = ({ kind }) => {
             {books.length <= 500 && (
               <>
                 {" · "}
-                <a className="root-footer__link" href={exportUrl(books.map((b) => b.BookID))}>
+                <a className="root-footer__link" href={exportUrl(books.filter((b) => b.Available !== false).map((b) => b.BookID))}>
                   {t("downloadAll")}
                 </a>
               </>

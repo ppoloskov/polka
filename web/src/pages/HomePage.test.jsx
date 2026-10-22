@@ -12,11 +12,11 @@ const Location = () => {
   return <div data-testid="location">{loc.pathname}</div>;
 };
 
-const renderHome = (config) =>
+const renderHome = (config, selectedLibraryId = "") =>
   render(
     <MemoryRouter initialEntries={["/"]}>
       <Routes>
-        <Route path="/" element={<HomePage config={config} />} />
+        <Route path="/" element={<HomePage config={config} selectedLibraryId={selectedLibraryId} />} />
         <Route path="*" element={<Location />} />
       </Routes>
     </MemoryRouter>
@@ -78,5 +78,19 @@ describe("HomePage", () => {
     renderHome({});
     await waitFor(() => expect(document.querySelector(".homepage__error")).not.toBeNull());
     expect(document.querySelector(".homepage__error")).toHaveTextContent(t("home.loadError"));
+  });
+
+  it("refetches shelves when the selected library changes and hides the combined count", async () => {
+    fetchHomeShelves.mockResolvedValue({ shelves: [] });
+    const view = renderHome({ numberOfBooks: 1234 }, "north");
+    await waitFor(() => expect(fetchHomeShelves).toHaveBeenCalledWith({ libraryId: "north" }));
+    expect(screen.getByRole("heading", { level: 1 })).not.toHaveTextContent("1,234");
+
+    view.rerender(
+      <MemoryRouter initialEntries={["/"]}>
+        <Routes><Route path="/" element={<HomePage config={{ numberOfBooks: 1234 }} selectedLibraryId="south" />} /></Routes>
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(fetchHomeShelves).toHaveBeenCalledWith({ libraryId: "south" }));
   });
 });

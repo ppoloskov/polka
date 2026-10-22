@@ -20,7 +20,7 @@ const formatBytes = (bytes) => {
   return t("book.kb", { n: (bytes / 1024).toFixed(1) });
 };
 
-const BookPage = ({ user, sync }) => {
+const BookPage = ({ user, sync, selectedLibraryId = "" }) => {
   const { bookId } = useParams();
   const navigate = useNavigate();
 
@@ -218,6 +218,7 @@ const BookPage = ({ user, sync }) => {
       bookId: data.bookForm.BookID,
       title: data.bookForm.Title,
       author,
+      libraryId: selectedLibraryId,
     })
       .then((res) => !cancelled && setSimilar(res ?? null))
       .catch(() => !cancelled && setSimilar(null));
@@ -225,7 +226,7 @@ const BookPage = ({ user, sync }) => {
     return () => {
       cancelled = true;
     };
-  }, [data]);
+  }, [data, selectedLibraryId]);
 
   const authorsLine = useMemo(() => {
     if (!data?.authors?.length) return data?.bookForm?.AuthorsNames ?? "";
@@ -333,6 +334,7 @@ const BookPage = ({ user, sync }) => {
           )}
 
           <h1 className="book-page__title">{Title}</h1>
+          {bookForm.LibraryName && <div className="book-page__library">{bookForm.LibraryName}</div>}
 
           {data?.authors?.length ? (
             <div className="book-page__authors">
