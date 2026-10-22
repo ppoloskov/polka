@@ -45,7 +45,8 @@ func (s *Store) SimilarBooks(ctx context.Context, bookID int64, limit int) ([]Bo
 		FROM books b
 		JOIN cand ON cand.id = b.id
 		LEFT JOIN series s2 ON s2.id = b.series_id
-		WHERE b.id != ?1 AND b.deleted = 0
+		WHERE b.id != ?1 AND b.deleted = 0 AND b.missing = 0
+			AND EXISTS (SELECT 1 FROM libraries l WHERE l.id = b.library_id AND l.enabled = 1)
 			AND (b.series_id IS NULL OR b.series_id IS NOT (SELECT series_id FROM seed))
 			-- skip translations and foreign-language editions
 			AND ((SELECT lang FROM books WHERE id = ?1) = '' OR b.lang = (SELECT lang FROM books WHERE id = ?1))
@@ -81,10 +82,12 @@ func (s *Store) SeriesContinuations(ctx context.Context, seedIDs, excludeIDs []i
 			GROUP BY series_id
 		)
 		SELECT b.id FROM seeds
-		JOIN books b ON b.series_id = seeds.series_id AND b.deleted = 0
+		JOIN books b ON b.series_id = seeds.series_id AND b.deleted = 0 AND b.missing = 0
+			AND EXISTS (SELECT 1 FROM libraries l WHERE l.id = b.library_id AND l.enabled = 1)
 			AND b.series_num = (
 				SELECT min(b2.series_num) FROM books b2
 				WHERE b2.series_id = seeds.series_id AND b2.deleted = 0
+					AND b2.missing = 0 AND EXISTS (SELECT 1 FROM libraries l WHERE l.id = b2.library_id AND l.enabled = 1)
 					AND b2.series_num > seeds.last_num
 					%s
 			)
@@ -115,7 +118,8 @@ func (s *Store) RecommendForUser(ctx context.Context, seedIDs, excludeIDs []int6
 		)
 		SELECT DISTINCT b.id FROM book_authors ba
 		JOIN seed_authors USING (author_id)
-		JOIN books b ON b.id = ba.book_id AND b.deleted = 0
+		JOIN books b ON b.id = ba.book_id AND b.deleted = 0 AND b.missing = 0
+			AND EXISTS (SELECT 1 FROM libraries l WHERE l.id = b.library_id AND l.enabled = 1)
 		WHERE b.id NOT IN (%s) %s
 		ORDER BY b.lib_rate DESC, b.id DESC LIMIT %d`,
 		placeholders(len(seedIDs)), placeholders2(len(seedIDs), len(seedIDs)),
@@ -135,7 +139,8 @@ func (s *Store) RecommendForUser(ctx context.Context, seedIDs, excludeIDs []int6
 			GROUP BY genre_id ORDER BY count(*) DESC LIMIT 4
 		)
 		SELECT b.id FROM books b
-		WHERE b.lib_rate >= 4 AND b.deleted = 0
+		WHERE b.lib_rate >= 4 AND b.deleted = 0 AND b.missing = 0
+			AND EXISTS (SELECT 1 FROM libraries l WHERE l.id = b.library_id AND l.enabled = 1)
 			AND b.id IN (SELECT book_id FROM book_genres JOIN fav_genres USING (genre_id))
 			AND b.id NOT IN (%s) %s
 		ORDER BY b.lib_rate DESC, b.id DESC LIMIT %d`,

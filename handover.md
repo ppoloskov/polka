@@ -45,6 +45,14 @@ admin deletion and other libraries, with rollback of all catalog/search/allocato
 changes on error. Exact-commit checks and publication are next. Availability
 tests are being implemented separately; exclude them from the snapshot commit.
 
+Snapshot PR #3 published: https://github.com/ppoloskov/polka/pull/3, exact
+`2a678ef`, all Go tests/vet/both builds pass. Availability work is reviewed and
+store/library/server tests pass; excludes missing/disabled books from counts,
+recommendations, files and search pages, and checks DB before reader cache hits.
+Admin restore keeps missing books out of FTS. Zero-book author/series dictionary
+listings retain legacy behavior. Exact-commit validation/publication next.
+INPX staging is reviewed separately; legacy adapter and folder tests are underway.
+
 Known legacy limit: lost/reused historical IDs and IDs retained only by offline
 clients cannot be reconstructed. Guarantee forward allocation safety from the
 known persisted migration boundary; do not expand sync protocols to claim repair.

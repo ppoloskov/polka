@@ -13,7 +13,7 @@ func (s *Store) LibraryForBook(ctx context.Context, bookID int64) (*Library, err
 	err := s.db.QueryRowContext(ctx, `
 		SELECT l.id, l.name, l.kind, l.root, l.source_path, l.enabled
 		FROM books b JOIN libraries l ON l.id = b.library_id
-		WHERE b.id = ? AND b.deleted = 0`, bookID).
+		WHERE b.id = ? AND b.deleted = 0 AND b.missing = 0 AND l.enabled = 1`, bookID).
 		Scan(&l.ID, &l.Name, &l.Kind, &l.Root, &l.SourcePath, &enabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
