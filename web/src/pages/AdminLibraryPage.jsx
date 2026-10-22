@@ -1,7 +1,10 @@
 import { t } from "../i18n";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { fetchSettings, importInpx, importStatus, saveSettings, testSmtp, uploadBooks } from "../api/manage";
+import {
+  createLibrary, fetchAdminLibraries, fetchSettings, importInpx, importStatus,
+  saveSettings, startLibraryUpdate, testSmtp, updateLibrary, uploadBooks,
+} from "../api/manage";
 import { deleteCollection, fetchCollections, importCollection, rematchCollection, syncCollectionSource } from "../api/collections";
 import "./AdminLibraryPage.css";
 
@@ -17,6 +20,174 @@ const PHASE_LABELS = () => ({
   loading: t("admin.import.loading"),
   indexing: t("admin.import.indexing"),
 });
+
+const LibraryManagement = ({ status, busy, setBusy, refreshStatus, startPolling }) => {
+  const [libraries, setLibraries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [name, setName] = useState("");
+  const [kind, setKind] = useState("inpx");
+  const [root, setRoot] = useState("");
+  const [sourcePath, setSourcePath] = useState("");
+  const [names, setNames] = useState({});
+  const [allowEmpty, setAllowEmpty] = useState({});
+  const [saving, setSaving] = useState("");
+  const hadUpdateInFlight = useRef(false);
+
+  const loadLibraries = () => fetchAdminLibraries()
+    .then((res) => {
+      const items = res.libraries ?? [];
+      setLibraries(items);
+      setNames(Object.fromEntries(items.map((item) => [item.id, item.name])));
+      setError("");
+    })
+    .catch((err) => setError(err.message || t("admin.libraries.loadFail")))
+    .finally(() => setLoading(false));
+
+  useEffect(() => { loadLibraries(); }, []);
+
+  useEffect(() => {
+    if (busy || status?.running) {
+      hadUpdateInFlight.current = true;
+    } else if (hadUpdateInFlight.current) {
+      hadUpdateInFlight.current = false;
+      if (status?.phase === "done") loadLibraries();
+    }
+  }, [busy, status?.running, status?.phase, status?.libraryId]);
+
+  const create = () => {
+    if (!name.trim() || !root.trim() || (kind === "inpx" && !sourcePath.trim())) return;
+    setSaving("create");
+    setError("");
+    createLibrary({ name: name.trim(), kind, root: root.trim(), sourcePath: sourcePath.trim() })
+      .then((res) => {
+        if (res.library) setLibraries((items) => [...items, res.library]);
+        setName("");
+        setRoot("");
+        setSourcePath("");
+      })
+      .catch((err) => setError(err.message || t("admin.libraries.createFail")))
+      .finally(() => setSaving(""));
+  };
+
+  const saveName = (item) => {
+    const nextName = (names[item.id] ?? item.name).trim();
+    if (!nextName || nextName === item.name) return;
+    setSaving(item.id);
+    setError("");
+    updateLibrary(item.id, { name: nextName })
+      .then((res) => {
+        if (res.library) setLibraries((items) => items.map((old) => old.id === item.id ? res.library : old));
+        setNames((values) => ({ ...values, [item.id]: res.library?.name ?? nextName }));
+      })
+      .catch((err) => setError(err.message || t("admin.libraries.saveFail")))
+      .finally(() => setSaving(""));
+  };
+
+  const setEnabled = (item, enabled) => {
+    setSaving(item.id);
+    setError("");
+    updateLibrary(item.id, { enabled })
+      .then((res) => {
+        if (res.library) setLibraries((items) => items.map((old) => old.id === item.id ? res.library : old));
+      })
+      .catch((err) => setError(err.message || t("admin.libraries.saveFail")))
+      .finally(() => setSaving(""));
+  };
+
+  const update = (item) => {
+    const permitEmpty = Boolean(allowEmpty[item.id]);
+    if (permitEmpty && !confirm(t("admin.libraries.allowEmptyConfirm", { name: item.name }))) return;
+    setError("");
+    setBusy(true);
+    startLibraryUpdate(item.id, { allowEmpty: permitEmpty })
+      .then(() => {
+        refreshStatus();
+        startPolling();
+      })
+      .catch((err) => {
+        setBusy(false);
+        setError(err.message || t("admin.libraries.updateFail"));
+      });
+  };
+
+  return (
+    <section className="library-admin__section">
+      <h2>{t("admin.libraries.title")}</h2>
+      <p className="library-admin__hint">{t("admin.libraries.hint")}</p>
+      {error && <p className="library-admin__error" role="alert">{error}</p>}
+      {loading ? <p className="library-admin__hint">{t("loading")}</p> : (
+        <ul className="library-admin__libraries">
+          {libraries.map((item) => {
+            const canUpdate = item.kind !== "legacy" || Boolean(item.sourcePath);
+            const result = status?.libraryId === item.id && !status.running ? status : null;
+            return (
+              <li key={item.id} className="library-admin__library">
+                <div className="library-admin__library-head">
+                  <input
+                    aria-label={t("admin.libraries.renameLabel", { name: item.name })}
+                    value={names[item.id] ?? item.name}
+                    onChange={(e) => setNames((values) => ({ ...values, [item.id]: e.target.value }))}
+                  />
+                  <span className="library-admin__library-kind">{t(`admin.libraries.kind.${item.kind}`)}</span>
+                </div>
+                <div className="library-admin__library-paths">
+                  <span>{t("admin.libraries.root")}: {item.root ? <code>{item.root}</code> : t("admin.libraries.legacyRoot")}</span>
+                  {item.sourcePath && <span>{t("admin.libraries.sourcePath")}: <code>{item.sourcePath}</code></span>}
+                </div>
+                <div className="library-admin__library-actions">
+                  <label>
+                    <input
+                      type="checkbox"
+                      aria-label={t("admin.libraries.enabled", { name: item.name })}
+                      checked={Boolean(item.enabled)}
+                      disabled={Boolean(saving) || busy}
+                      onChange={(e) => setEnabled(item, e.target.checked)}
+                    /> {t("admin.libraries.enabledLabel")}
+                  </label>
+                  <button type="button" className="btn btn-ghost" disabled={Boolean(saving) || busy || !(names[item.id] ?? item.name).trim() || (names[item.id] ?? item.name).trim() === item.name} onClick={() => saveName(item)}>
+                    {t("admin.libraries.saveName")}
+                  </button>
+                  <label>
+                    <input
+                      type="checkbox"
+                      aria-label={t("admin.libraries.allowEmpty")}
+                      checked={Boolean(allowEmpty[item.id])}
+                      disabled={busy}
+                      onChange={(e) => setAllowEmpty((values) => ({ ...values, [item.id]: e.target.checked }))}
+                    /> {t("admin.libraries.allowEmpty")}
+                  </label>
+                  <button type="button" className="btn btn-primary" disabled={busy || !canUpdate} onClick={() => update(item)}>
+                    {busy && status?.libraryId === item.id ? t("admin.libraries.updating") : t("admin.libraries.update")}
+                  </button>
+                </div>
+                {!canUpdate && <p className="library-admin__hint">{t("admin.libraries.legacySourceHint")}</p>}
+                {result?.phase === "done" && <p className="library-admin__ok">{t("admin.libraries.diff", { added: result.added ?? 0, removed: result.removed ?? 0, changed: result.changed ?? 0, unchanged: result.unchanged ?? 0 })}</p>}
+                {result?.phase === "error" && <p className="library-admin__error" role="alert">{t("admin.libraries.updateError", { err: result.error || "" })}</p>}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <div className="library-admin__library-create">
+        <h3>{t("admin.libraries.createTitle")}</h3>
+        <div className="library-admin__library-form">
+          <label>{t("admin.libraries.name")}<input value={name} onChange={(e) => setName(e.target.value)} /></label>
+          <label>{t("admin.libraries.kind")}<select value={kind} onChange={(e) => setKind(e.target.value)}>
+            <option value="inpx">{t("admin.libraries.kind.inpx")}</option>
+            <option value="folder">{t("admin.libraries.kind.folder")}</option>
+          </select></label>
+          <label>{t("admin.libraries.root")}<input value={root} onChange={(e) => setRoot(e.target.value)} /></label>
+          {kind === "inpx" && <label>{t("admin.libraries.sourcePath")}<input value={sourcePath} onChange={(e) => setSourcePath(e.target.value)} /></label>}
+        </div>
+        <p className="library-admin__hint">{t("admin.libraries.pathsHint")}</p>
+        <button type="button" className="btn btn-primary" disabled={saving === "create" || !name.trim() || !root.trim() || (kind === "inpx" && !sourcePath.trim())} onClick={create}>
+          {saving === "create" ? t("admin.libraries.creating") : t("admin.libraries.create")}
+        </button>
+      </div>
+    </section>
+  );
+};
 
 const AdminLibraryPage = () => {
   // --- Book upload ---
@@ -60,15 +231,25 @@ const AdminLibraryPage = () => {
   const [inpxPath, setInpxPath] = useState("");
   const [replace, setReplace] = useState(false);
   const [status, setStatus] = useState(null);
+  const [libraryUpdateStarting, setLibraryUpdateStarting] = useState(false);
   const polling = useRef(null);
+
+  const startPolling = () => {
+    if (!polling.current) polling.current = setInterval(refreshStatus, 1000);
+  };
 
   const refreshStatus = () =>
     importStatus()
       .then((st) => {
         setStatus(st);
-        if (!st.running && polling.current) {
-          clearInterval(polling.current);
-          polling.current = null;
+        if (st.running) {
+          startPolling();
+        } else {
+          setLibraryUpdateStarting(false);
+          if (polling.current) {
+            clearInterval(polling.current);
+            polling.current = null;
+          }
         }
       })
       .catch(() => {});
@@ -81,19 +262,21 @@ const AdminLibraryPage = () => {
   const startImport = () => {
     if (!inpxFile && !inpxPath.trim()) return;
     if (replace && !confirm(t("admin.import.confirm"))) return;
+    setLibraryUpdateStarting(true);
     importInpx({ file: inpxFile, path: inpxPath.trim(), replace })
       .then(() => {
         setInpxFile(null);
         setInpxPath("");
         refreshStatus();
-        polling.current = setInterval(refreshStatus, 1000);
+        startPolling();
       })
       .catch((err) => {
+        setLibraryUpdateStarting(false);
         alert(err.status === 409 ? t("admin.import.conflict") : t("admin.import.fail"));
       });
   };
 
-  const importRunning = Boolean(status?.running);
+  const importRunning = Boolean(status?.running || libraryUpdateStarting);
 
   // --- Sources for external ratings and similar books ---
   const [enrichment, setEnrichment] = useState(null);
@@ -264,6 +447,14 @@ const AdminLibraryPage = () => {
           {t("admin.library.empty", { dir: library.dir })}
         </div>
       )}
+
+      <LibraryManagement
+        status={status}
+        busy={importRunning}
+        setBusy={setLibraryUpdateStarting}
+        refreshStatus={refreshStatus}
+        startPolling={startPolling}
+      />
 
       <section className="library-admin__section">
         <h2>{t("admin.upload")}</h2>
