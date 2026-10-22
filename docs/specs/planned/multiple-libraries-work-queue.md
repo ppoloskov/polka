@@ -15,7 +15,7 @@ architect reviews scope/style/behavior before Git publication.
 | WP3b | Availability filtering before exposing update entrypoints; missing/disabled excluded from normal counts, browsing, files and cached chapters | WP2, WP3 | missing/disabled counts/search/author/series/file/recommendations, reader-cache removal and restore | Exact commit validated; publishing next |
 | WP4a | Strict complete INPX staging and exact immutable record keys | WP3 | owned-copy stability, same/changed/source-deleted records, malformed/duplicate/corrupt input | Reviewed; tests/vet and 20k scale probe pass; exact commit next |
 | WP4b | Saved-source updater and legacy CLI/web import adapters over same engine | WP3b, WP4a | path/upload/default target, failed replace preserves data, empty guard, unchanged old contracts | Test writing |
-| WP5 | Recursive folder adapter, full-byte hashes, existing metadata parsers/fallback | WP2, WP3 | recursive add/change/remove, duplicate copies, symlinks/traversal/unreadable/unstable inputs, realistic source tree | Pending |
+| WP5 | Recursive folder adapter, full-byte hashes, existing metadata parsers/fallback | WP2, WP3 | recursive add/change/remove, duplicate copies, symlinks/traversal/unreadable/unstable inputs, realistic source tree | Reviewed; focused tests/vet pass; committing independently before legacy adapters |
 | WP6 | Admin libraries UI/API/CLI, combined browsing/filter/source badges and unavailable personal entries | WP4, WP5 | admin authorization/demo/connected proxy, counts/pagination/filter/bulk, existing UI tests/build and real HTTP workflows | Pending |
 | WP7 | Upgrade/restart and end-to-end acceptance, final compatibility cleanup/docs | All | previous-version data and unchanged config/clients; both source types; source failure; repeated updates; full Go/Node/build/vet; actual container proof where available | Pending |
 
@@ -115,3 +115,12 @@ source stat checks. `inpx:v1:` has a golden persisted-key guard. Added a source
 key lookup index on first publication to avoid quadratic scans; temporary 20k
 snapshot probe: initial 1.86s, repeat 3.77s, indexed query plan confirmed. This is
 a representative probe, not a measured 690k-library performance guarantee.
+
+Published [availability PR #4](https://github.com/ppoloskov/polka/pull/4).
+INPX staging exact `254d42f` passed full Go tests/vet/both builds from an archive.
+WP5 is independent of the legacy adapters and is being delivered first to keep
+the source changes separate. Folder hashing and metadata use one confined
+`os.Root` file descriptor; EPUB has a small ReaderAt parser wrapper. Tests cover
+recursion, source-byte preservation, symlink/unsupported skips, full hashes,
+metadata/fallback, changed/moved/identical copies, added dates and extension case.
+No public folder management is claimed until the API/UI packages land.

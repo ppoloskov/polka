@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"os"
 	"path"
 	"strings"
 )
@@ -19,13 +20,27 @@ type EPUBMeta struct {
 
 // ParseEPUBFile reads the metadata of an EPUB file on disk.
 func ParseEPUBFile(filePath string) (*EPUBMeta, error) {
-	zr, err := zip.OpenReader(filePath)
+	f, err := os.Open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("open epub: %w", err)
 	}
-	defer zr.Close()
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("open epub: %w", err)
+	}
+	return ParseEPUB(f, info.Size())
+}
 
-	opfPath, err := epubRootFile(&zr.Reader)
+// ParseEPUB reads metadata from an EPUB file using an existing random-access
+// reader, allowing callers to hash and parse the same opened file.
+func ParseEPUB(r io.ReaderAt, size int64) (*EPUBMeta, error) {
+	zr, err := zip.NewReader(r, size)
+	if err != nil {
+		return nil, fmt.Errorf("open epub: %w", err)
+	}
+
+	opfPath, err := epubRootFile(zr)
 	if err != nil {
 		return nil, err
 	}

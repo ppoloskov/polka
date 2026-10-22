@@ -63,6 +63,15 @@ a claim of unchanged archive bytes. Added source-key index at first publication:
 Legacy adapter tests confirm destructive replace still needs fixing before public
 updates are accepted. Folder implementation is separate and uncommitted.
 
+Availability PR #4: https://github.com/ppoloskov/polka/pull/4. Source staging
+exact `254d42f` passed all Go tests/vet/both builds. The independent folder adapter
+is ready to commit before the legacy import wiring: os.Root confines traversal
+and opening, full hash and metadata share a descriptor, EPUB ReaderAt wrapper
+avoids reopening paths, actual extension case is retained, and added dates/hash
+fields are populated. Focused importer/library tests/vet pass. The legacy adapter
+worker is fixing provenance, portable source retention, and cache invalidation
+before its commit; exclude those paths from the folder commit.
+
 Known legacy limit: lost/reused historical IDs and IDs retained only by offline
 clients cannot be reconstructed. Guarantee forward allocation safety from the
 known persisted migration boundary; do not expand sync protocols to claim repair.
