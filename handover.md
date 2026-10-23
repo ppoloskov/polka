@@ -132,3 +132,14 @@ benchmark: the live-shaped consolidation publishes in 2m32s versus 4h15m+ for
 the running live attempt. Evidence:
 `/private/tmp/polka-validation/fts-rebuild-image-v2/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
 The digest-pinned live deployment was unchanged by publishing.
+
+One-time INPX consolidation completed 2026-10-23T05:26Z on the above digest:
+`import done books=684168 duration=4m4.043s` and
+`merged consolidated book references count=132103`. The same update had ground
+for 4.5 hours without committing under the per-row delete + id-only probe
+cleanup code. Post-checks: catalog committed (polka.db 1,069,318,144 bytes),
+zero pod restarts, zero ERROR lines, home page ~100µs. Two earlier attempts
+(old code, then v1 image without the probe fix) were rolled back by pod
+restart; orphaned snapshot staging dirs were removed afterwards. The catalog
+now carries inpx:v2 group keys throughout, so routine updates are exact-key
+matches with no consolidation.
