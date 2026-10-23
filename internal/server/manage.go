@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vestigiumincaligne/polka/internal/auth"
 	"github.com/vestigiumincaligne/polka/internal/importer"
 	"github.com/vestigiumincaligne/polka/internal/library"
 	"github.com/vestigiumincaligne/polka/internal/store"
@@ -515,14 +516,19 @@ func (s *Server) processPendingMerges(ctx context.Context) {
 		if len(pairs) == 0 {
 			break
 		}
-		merges := make(map[int64]int64, len(pairs))
 		losers := make([]int64, len(pairs))
 		for i, p := range pairs {
-			merges[p.Loser] = p.Winner
 			losers[i] = p.Loser
 		}
+		// The ordered slice is passed through unchanged: a winner that is
+		// itself a later pair's loser must move its rows first, and the
+		// stored order is the publication order.
+		merges := make([]auth.BookRefPair, len(pairs))
+		for i, p := range pairs {
+			merges[i] = auth.BookRefPair{Loser: p.Loser, Winner: p.Winner}
+		}
 		if err := s.users.MergeBookRefs(ctx, merges); err != nil {
-			s.log.Error("merge consolidated book references", "count", len(merges), "error", err)
+			s.log.Error("merge consolidated book references", "count", len(pairs), "error", err)
 			return
 		}
 		if err := s.st.ClearPendingBookMerges(ctx, losers); err != nil {
