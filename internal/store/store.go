@@ -4,11 +4,12 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/vestigiumincaligne/polka/internal/sqlitedrv"
 )
@@ -17,10 +18,12 @@ type Store struct {
 	db     *sql.DB
 	readDB *sql.DB
 
-	countMu    sync.Mutex
-	countCache int
-	countAt    time.Time
-	countValid bool
+	// genreIDs caches visible per-genre member id lists; dropped whenever
+	// visibility changes (see MaintainCounts / publication).
+	genreIDs struct {
+		mu    sync.Mutex
+		lists map[string][]int64
+	}
 }
 
 func Open(path string) (*Store, error) {
@@ -56,8 +59,27 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("create pending book merges table: %w", err)
 	}
+	// Partial shelf indexes: built-in shelves order by id/rate on live rows;
+	// without these the planner walks full (library_id-agnostic) indexes and
+	// applies the availability filter per candidate, which dominated deep
+	// pagination on the real catalog (281ms at offset 60000 vs ~20ms).
+	// A missing index merely costs speed; errors surface on the first query.
+	for _, idx := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_books_added_live ON books (added, id) WHERE deleted = 0 AND missing = 0`,
+		`CREATE INDEX IF NOT EXISTS idx_books_rate_live_4 ON books (lib_rate, id) WHERE deleted = 0 AND missing = 0 AND lib_rate >= 4`,
+		`CREATE INDEX IF NOT EXISTS idx_books_rate_live_mid ON books (lib_rate, id) WHERE deleted = 0 AND missing = 0 AND lib_rate BETWEEN 1 AND 3`,
+	} {
+		if _, err := db.ExecContext(context.Background(), idx); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("ensure book listing index: %w", err)
+		}
+	}
 	// In-memory databases are connection-local unless opened with a shared
-	// cache URI. Reuse the writer in that case; file databases get a WAL reader.
+	// cache URI. Reuse the writer in that case; file databases get a reader
+	// pool: multiple WAL readers scale, while one reader connection would
+	// serialize every read behind the slowest query and turn concurrent page
+	// loads, cover lookups and updates into a queue (measured ~10x p95
+	// blowout on the real catalog at 8 concurrent requests).
 	if strings.Contains(path, ":memory:") {
 		s.readDB = db
 	} else {
@@ -66,7 +88,7 @@ func Open(path string) (*Store, error) {
 			db.Close()
 			return nil, err
 		}
-		reader.SetMaxOpenConns(1)
+		reader.SetMaxOpenConns(8)
 		s.readDB = reader
 	}
 	return s, nil
@@ -153,36 +175,91 @@ func (s *Store) BookCount(ctx context.Context) (int, error) {
 	return n, err
 }
 
-// visibleBookCountTTL bounds how long the cached visible count can go
-// unchanged before a recompute; catalog mutations invalidate it eagerly.
-const visibleBookCountTTL = time.Minute
-
-// VisibleBookCount is BookCount behind a short-lived cache: the home/config
-// endpoints ask for it on every page load, and the full visible-set scan is
-// one of the most expensive reads on large catalogs.
+// VisibleBookCount is the home/config total. The value is maintained with
+// the catalog: publication and direct mutations record the exact number in
+// meta (see MaintainCounts), so reads are constant-time even on a 1.6M-row
+// catalog where an inline count measured 1.4-1.7s. A database without the
+// recorded value (first start after the upgrade) computes it once and
+// records it for later reads.
 func (s *Store) VisibleBookCount(ctx context.Context) (int, error) {
-	s.countMu.Lock()
-	if s.countValid && time.Since(s.countAt) < visibleBookCountTTL {
-		n := s.countCache
-		s.countMu.Unlock()
-		return n, nil
+	if v := s.GetMeta(ctx, metaKeysVisibleCount, ""); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n, nil
+		}
 	}
-	s.countMu.Unlock()
 	n, err := s.BookCount(ctx)
 	if err != nil {
 		return 0, err
 	}
-	s.countMu.Lock()
-	s.countCache, s.countAt, s.countValid = n, time.Now(), true
-	s.countMu.Unlock()
+	// Best effort: a concurrent publisher records a fresher value anyway.
+	_ = s.SetMeta(ctx, metaKeysVisibleCount, strconv.Itoa(n))
 	return n, nil
 }
 
-// invalidateBookCount drops the cached visible count after a catalog change.
-func (s *Store) invalidateBookCount() {
-	s.countMu.Lock()
-	s.countValid = false
-	s.countMu.Unlock()
+// MaintainCounts recomputes the visible book total and the per-genre visible
+// book counts and records both in meta so reads stay constant-time. The
+// values ride the publication transaction (maintainCountsTx); direct
+// catalog mutations recompute inline — acceptable for rare admin-paced
+// operations, and required for eager correctness. On a 1.6M-book catalog
+// this costs a couple of seconds of writer time, invisible to readers (WAL).
+// Visibility-affecting changes also drop the cached per-genre member lists.
+func (s *Store) MaintainCounts(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.maintainCountsTx(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.dropGenreVisibleIDs()
+	return nil
+}
+
+// maintainCountsTx records both count families inside an open transaction.
+func (s *Store) maintainCountsTx(ctx context.Context, tx *sql.Tx) error {
+	var total int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT count(*) FROM books b WHERE b.deleted = 0 AND `+availableBook).Scan(&total); err != nil {
+		return err
+	}
+	if err := setMetaTx(ctx, tx, metaKeysVisibleCount, strconv.Itoa(total)); err != nil {
+		return err
+	}
+	type entry struct {
+		Code  string `json:"Code"`
+		Books int    `json:"Books"`
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT g.code, count(*)
+		FROM genres g
+		JOIN book_genres bg ON bg.genre_id = g.id
+		JOIN books b ON b.id = bg.book_id AND b.deleted = 0 AND `+availableBook+`
+		GROUP BY g.id
+		HAVING count(*) > 0`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	counts := make([]entry, 0, 384)
+	for rows.Next() {
+		var e entry
+		if err := rows.Scan(&e.Code, &e.Books); err != nil {
+			return err
+		}
+		counts = append(counts, e)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	b, err := json.Marshal(counts)
+	if err != nil {
+		return err
+	}
+	return setMetaTx(ctx, tx, metaKeysGenreCounts, string(b))
 }
 
 func (s *Store) GetMeta(ctx context.Context, key, def string) string {
@@ -195,6 +272,14 @@ func (s *Store) GetMeta(ctx context.Context, key, def string) string {
 
 func (s *Store) SetMeta(ctx context.Context, key, value string) error {
 	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
+// setMetaTx writes a meta value inside the given transaction (nil = the
+// standalone writer connection).
+func setMetaTx(ctx context.Context, tx *sql.Tx, key, value string) error {
+	_, err := tx.ExecContext(ctx,
 		`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, value)
 	return err
 }

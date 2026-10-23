@@ -849,3 +849,65 @@ func TestPublishLibraryRecordsPendingMergesForRecovery(t *testing.T) {
 		t.Fatalf("pending pairs after clear = %v, want none", remaining)
 	}
 }
+
+// Cached per-genre member lists must not outlive visibility changes: a
+// deleted book and a publish sweep both remove members, and pages must
+// reflect that immediately (the cache is dropped on every maintained
+// visibility change).
+func TestGenreShelfCacheFollowsVisibilityChanges(t *testing.T) {
+	st, ctx := snapshotStore(t)
+	libraryID := snapshotLibrary(t, st, ctx, "genre-cache")
+
+	a := snapshotEntry("inpx:v1:a", "First genre book")
+	a.book.File = "a"
+	a.book.Genres = []string{"sf"}
+	b := snapshotEntry("inpx:v1:b", "Second genre book")
+	b.book.File = "b"
+	b.book.Genres = []string{"sf"}
+	if err := publishTestSnapshot(t, st, ctx, libraryID, a, b); err != nil {
+		t.Fatal(err)
+	}
+
+	shelf, _, err := st.ShelfBooks(ctx, "genre_sf", 10, 0, libraryID)
+	if err != nil || len(shelf) != 2 {
+		t.Fatalf("genre shelf = %d books, %v; want both", len(shelf), err)
+	}
+	aID := snapshotBookID(t, st, libraryID, "inpx:v1:a")
+
+	// Direct deletion drops the cache via MaintainCounts.
+	if err := st.SetBookDeleted(ctx, aID, true); err != nil {
+		t.Fatal(err)
+	}
+	shelf, _, err = st.ShelfBooks(ctx, "genre_sf", 10, 0, libraryID)
+	if err != nil || len(shelf) != 1 || shelf[0].ID == aID {
+		t.Fatalf("genre shelf after delete = %+v, %v; want only the live book", shelf, err)
+	}
+
+	// A publish that sweeps a book's key to missing must reflect too: a
+	// remains deleted, the replacement snapshot no longer stages its key...
+	// restore a first so the sweep is what hides it.
+	if err := st.SetBookDeleted(ctx, aID, false); err != nil {
+		t.Fatal(err)
+	}
+	shelf, _, err = st.ShelfBooks(ctx, "genre_sf", 10, 0, libraryID)
+	if err != nil || len(shelf) != 2 {
+		t.Fatalf("genre shelf after restore = %d, %v; want both", len(shelf), err)
+	}
+	// Replacement without a's key: the sweep retires it to missing.
+	bEntry := snapshotEntry("inpx:v1:b", "Second genre book")
+	bEntry.book.File = "b"
+	bEntry.book.Genres = []string{"sf"}
+	snap := newTestSnapshot(t, ctx, bEntry)
+	if _, err := st.PublishLibrary(ctx, libraryID, snap, false); err != nil {
+		t.Fatal(err)
+	}
+	shelf, _, err = st.ShelfBooks(ctx, "genre_sf", 10, 0, libraryID)
+	if err != nil || len(shelf) != 1 {
+		t.Fatalf("genre shelf after sweep = %d books, %v; want one", len(shelf), err)
+	}
+	for _, book := range shelf {
+		if book.ID == aID {
+			t.Fatalf("swept book still on the genre shelf: %+v", book)
+		}
+	}
+}

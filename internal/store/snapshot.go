@@ -707,6 +707,12 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 	if err := s.InsertPendingBookMergesTx(ctx, tx, pendingMerges); err != nil {
 		return stats, fmt.Errorf("record pending book merges: %w", err)
 	}
+	// Record the maintained totals in the same transaction so config and
+	// genre reads are constant-time after the commit (the inline counters
+	// cost seconds on a 1.6M-row catalog).
+	if err := s.maintainCountsTx(ctx, tx); err != nil {
+		return stats, fmt.Errorf("maintain counts: %w", err)
+	}
 	// Covers can change on any committed publish (the server resets the
 	// cover cache), so bump the per-library cover generation backing the
 	// cover ETag validator regardless of the diff content.
@@ -721,7 +727,10 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 	if err := tx.Commit(); err != nil {
 		return stats, err
 	}
-	s.invalidateBookCount()
+	// The committed state may differ from any in-memory genre member lists
+	// built during or before this publish: drop them so subsequent reads
+	// rebuild against the new catalog.
+	s.dropGenreVisibleIDs()
 	// Refresh planner statistics after a large publish. The catalog is
 	// already committed, so an ANALYZE failure is not fatal.
 	_, _ = s.db.ExecContext(ctx, `ANALYZE`)
