@@ -121,3 +121,14 @@ for Linux/amd64, built from `codex/image-libraries-browsing` merge commit
 config digest matched the build metadata; smoke passed on the deployment node.
 Evidence: `/private/tmp/polka-validation/home-perf-image/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
 The digest-pinned live deployment was unchanged by publishing.
+
+Publish-perf image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-aac9850`
+resolves to `sha256:74f79fec830065c067d4ad339ff0b6b9f308c63bb34d7aa9cfd07b5f72e2271f`
+for Linux/amd64, built from `codex/image-libraries-browsing` commit `aac9850`
+(home-perf stack + PR #19 INPX rekey fast path + PR #20 publish FTS rebuild and
+quadratic probe fix). Registry digest matched the build metadata. Real-catalog
+benchmark: the live-shaped consolidation publishes in 2m32s versus 4h15m+ for
+the running live attempt. Evidence:
+`/private/tmp/polka-validation/fts-rebuild-image-v2/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+The digest-pinned live deployment was unchanged by publishing.
