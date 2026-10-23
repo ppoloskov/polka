@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/base64"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -565,6 +566,31 @@ func TestCompleteFB2(t *testing.T) {
 	}
 	if got := base64FromBinary(t, data, "1"); !bytes.Equal(got, jpeg) {
 		t.Errorf("illustration payload mismatch")
+	}
+
+	// Exotic ids must come out escaped and whole (no truncation), and the
+	// emitted elements must stay parseable XML.
+	exotic := `<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+<description><title-info><book-title>x</book-title></title-info></description>
+<body><section><image l:href="#a&quot;9&amp;more"/><p>т</p></section></body></FictionBook>`
+	out, err := ReembedBinaries([]byte(exotic), []string{`a"9&more`}, map[string][]byte{`a"9&more`: jpeg})
+	if err != nil {
+		t.Fatalf("exotic id: %v", err)
+	}
+	if !strings.Contains(string(out), `<binary id="a&#34;9&amp;more" content-type="image/jpeg">`) {
+		t.Errorf("escaped id not preserved: %.200q", out)
+	}
+	var check struct {
+		XMLName  xml.Name `xml:"FictionBook"`
+		Binaries []struct {
+			ID string `xml:"id,attr"`
+		} `xml:"binary"`
+	}
+	if err := xml.Unmarshal(out, &check); err != nil {
+		t.Fatalf("re-embedded document does not parse: %v", err)
+	}
+	if len(check.Binaries) != 1 || check.Binaries[0].ID != `a"9&more` {
+		t.Errorf("round-tripped id = %q (%+v)", check.Binaries[0].ID, check.Binaries)
 	}
 
 	// Fully embedded book: exact original bytes.

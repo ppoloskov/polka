@@ -342,32 +342,55 @@ func fb2MissingBinaries(data []byte) []string {
 }
 
 // ReembedBinaries inserts the given payloads (fb2 image id -> raw image
-// bytes) as <binary> elements before the closing </FictionBook>. The image
-// type is sniffed from the bytes (sidecar entries carry no extensions).
-// Returns ErrNoFile when no insertion point is found.
+// bytes) as <binary> elements before the closing </FictionBook>. Ids come
+// from the source document and are preserved whole: the elements are emitted
+// with encoding/xml (ids are escaped, never truncated), while unprefixed
+// element and attribute names keep them in the document's default namespace
+// the way existing binaries are written. The image type is sniffed from the
+// bytes (sidecar entries carry no extensions). Returns ErrNoFile when no
+// insertion point is found.
 func ReembedBinaries(data []byte, ids []string, payloads map[string][]byte) ([]byte, error) {
 	cut := bytes.LastIndex(data, []byte("</FictionBook>"))
 	if cut < 0 {
 		return nil, ErrNoFile
 	}
-	var sb bytes.Buffer
-	sb.Grow(len(data) + 256)
-	sb.Write(data[:cut])
+	var buf bytes.Buffer
+	buf.Grow(len(data) + 256)
+	buf.Write(data[:cut])
+	enc := xml.NewEncoder(&buf)
 	for _, id := range ids {
 		payload, ok := payloads[id]
 		if !ok || len(payload) == 0 {
 			continue
 		}
-		fmt.Fprintf(&sb, `<binary id="%.200s" content-type="%s">`, id, sniffImageMime(payload))
+		start := xml.StartElement{
+			Name: xml.Name{Local: "binary"},
+			Attr: []xml.Attr{
+				{Name: xml.Name{Local: "id"}, Value: id},
+				{Name: xml.Name{Local: "content-type"}, Value: sniffImageMime(payload)},
+			},
+		}
+		if err := enc.EncodeToken(start); err != nil {
+			return nil, err
+		}
 		b64 := base64.StdEncoding.EncodeToString(payload)
+		var wrapped strings.Builder
 		for len(b64) > 76 {
-			sb.WriteString(b64[:76])
-			sb.WriteByte('\n')
+			wrapped.WriteString(b64[:76])
+			wrapped.WriteByte('\n')
 			b64 = b64[76:]
 		}
-		sb.WriteString(b64)
-		sb.WriteString("</binary>\n")
+		wrapped.WriteString(b64)
+		if err := enc.EncodeToken(xml.CharData(wrapped.String())); err != nil {
+			return nil, err
+		}
+		if err := enc.EncodeToken(start.End()); err != nil {
+			return nil, err
+		}
 	}
-	sb.Write(data[cut:])
-	return sb.Bytes(), nil
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	buf.Write(data[cut:])
+	return buf.Bytes(), nil
 }
