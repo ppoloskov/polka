@@ -143,3 +143,25 @@ zero pod restarts, zero ERROR lines, home page ~100µs. Two earlier attempts
 restart; orphaned snapshot staging dirs were removed afterwards. The catalog
 now carries inpx:v2 group keys throughout, so routine updates are exact-key
 matches with no consolidation.
+
+Cover and reader-image 404s after the consolidation were diagnosed 2026-10-23
+and are NOT a consolidation regression: the probed IDs are all live winners
+with current paths, archives on disk are .7z (the .zip→.7z fallback works),
+and book files open fine. The source is the dump layout itself: FB2 files in
+this Flibusta dump have `<binary>` payloads stripped — they reference
+`#cover`, `#0`, `#1`… that are absent from the book. The payloads live in
+optional sidecar trees next to the book archives: `covers/<archive>.zip|.7z`
+(covers by book id, already served) and `images/<archive>.zip|.7z`
+(illustrations as `<bookid>/<imageid>`, previously never consulted — every
+inline illustration 404'd while reading). Some books (e.g. journal pieces
+like fb2-161831-166042.zip/163747) have no cover anywhere; their cover 404
+is truthful.
+
+New-format fix delivered in PR #21 (`1f8200b`, based on #20): `Library.Binary`
+falls back to the images sidecar (exact `<bookid>/<imageid>` lookup, ZIP/7z,
+content-sniffed MIME, JPEG XL normalized like other sidecar images) and serves
+the conventional `cover` id from the covers sidecar; web reader hides chapter
+images that fail to load so unresolved references stop showing broken-image
+placeholders; README documents the sidecar layout. Verified in-pod against the
+real dump: `Binary("0")` → 59 KB jpeg, `Binary("1")` → 1.7 KB jpeg,
+`Binary("cover")` → 294 KB jpeg (all 404 before the fix).
