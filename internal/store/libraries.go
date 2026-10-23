@@ -86,6 +86,41 @@ func (s *Store) AddLibrary(ctx context.Context, l Library) (*Library, error) {
 	return &l, nil
 }
 
+// UpdateLibrary changes a library's display name and/or availability. Source
+// paths and kind are fixed when a library is created.
+func (s *Store) UpdateLibrary(ctx context.Context, id string, name *string, enabled *bool) error {
+	if name == nil && enabled == nil {
+		return fmt.Errorf("library update is empty")
+	}
+	var nameValue any
+	if name != nil {
+		trimmed := strings.TrimSpace(*name)
+		if trimmed == "" {
+			return fmt.Errorf("library name is required")
+		}
+		nameValue = trimmed
+	}
+	var enabledValue any
+	if enabled != nil {
+		enabledValue = boolToInt(*enabled)
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE libraries
+		SET name=COALESCE(?, name), enabled=COALESCE(?, enabled)
+		WHERE id=?`, nameValue, enabledValue, id)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ReserveBookIDs raises the durable ID floor. It is safe to call repeatedly.
 func (s *Store) ReserveBookIDs(ctx context.Context, maxID int64) error {
 	if maxID < 0 {

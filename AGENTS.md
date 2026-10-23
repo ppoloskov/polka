@@ -26,3 +26,8 @@ book IDs while keeping catalog updates and browsing simple and fast.
 See `docs/specs/planned/multiple-libraries-work-queue.md` for the staged PR series.
 Architect reviews each diff and evidence; the Git agent publishes reviewed
 branches to `ppoloskov/polka`. No merge is authorized.
+
+Library management reuses the existing import mutex/status. Source paths and
+kinds are fixed after registration; changing a root requires a new namespace.
+Keep public library metadata free of server paths. Successful updates and
+enable/disable changes must invalidate genre counts; update cover caches by owner.
