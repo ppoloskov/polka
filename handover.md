@@ -199,6 +199,16 @@ worktree owns the feature. Preserving the dirty primary checkout is
 intentional per the working conventions; it is not a production alternative
 and must never be staged or published with the feature.
 
+Review image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-a374461`
+resolves to `sha256:53d6305e93cee4e46c716f3b0fc98066c7116efad9f1f1785b9a2fd0893afd6b`
+for Linux/amd64, built from `codex/image-libraries-browsing` commit `a374461`
+(full sidecar format support + PR #21 durable merge recovery + encoding/xml
+binary emission + the rewritten PR #16 HTTP-cache-only cover behavior).
+Registry digest matched the build metadata. Evidence:
+`/private/tmp/polka-validation/review-image/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+The digest-pinned live deployment was unchanged by publishing.
+
 Sidecar-format image publication (no merge or deployment):
 `registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-1f8200b`
 resolves to `sha256:65b6b1838427bb2b411875285f6aa0ebeb2c49a092cd87c1f78fac3767dd37b1`
