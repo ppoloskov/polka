@@ -11,6 +11,13 @@ import (
 
 const bookIDHighWaterKey = "book_id_high_water"
 
+// Maintained counters (see MaintainCounts): exact values recorded with the
+// catalog so reads are constant-time on large libraries.
+const (
+	metaKeysVisibleCount = "visible_book_count"
+	metaKeysGenreCounts  = "genre_book_counts"
+)
+
 type Library struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
@@ -118,8 +125,9 @@ func (s *Store) UpdateLibrary(ctx context.Context, id string, name *string, enab
 	if changed == 0 {
 		return ErrNotFound
 	}
-	s.invalidateBookCount()
-	return nil
+	// Enable/disable flips the whole library's visibility: refresh the
+	// maintained totals so reads are current without a full scan later.
+	return s.MaintainCounts(ctx)
 }
 
 // ReserveBookIDs raises the durable ID floor. It is safe to call repeatedly.

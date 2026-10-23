@@ -398,7 +398,9 @@ func (im *ImportSession) Finish() (ImportStats, error) {
 	im.stats.Series = len(im.series)
 	im.stats.Genres = len(im.genres)
 	im.stats.Duration = time.Since(im.start)
-	im.s.invalidateBookCount()
+	if err := im.s.MaintainCounts(im.ctx); err != nil {
+		return im.stats, err
+	}
 	return im.stats, nil
 }
 

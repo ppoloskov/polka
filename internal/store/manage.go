@@ -49,7 +49,10 @@ func (s *Store) AddBook(ctx context.Context, b *BookInput) (int64, error) {
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
-	s.invalidateBookCount()
+	// Keep the maintained totals in sync with rare single-book uploads.
+	if err := s.MaintainCounts(ctx); err != nil {
+		return 0, err
+	}
 	return id, nil
 }
 
@@ -163,7 +166,7 @@ func (s *Store) SetBookDeleted(ctx context.Context, bookID int64, deleted bool) 
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
-	s.invalidateBookCount()
+	s.MaintainCounts(ctx)
 
 	// Deleted books are kept out of the FTS index (so search counts stay
 	// honest); drop any stale row first so a restore never hits a
@@ -197,7 +200,7 @@ func (s *Store) Clear(ctx context.Context) error {
 			return fmt.Errorf("clear %s: %w", table, err)
 		}
 	}
-	s.invalidateBookCount()
+	s.MaintainCounts(ctx)
 	return nil
 }
 

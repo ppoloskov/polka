@@ -104,6 +104,9 @@ func TestMigrateV4Series(t *testing.T) {
 		DROP TABLE book_series;
 		DROP TABLE libraries;
 		DROP INDEX idx_books_library_source;
+		DROP INDEX IF EXISTS idx_books_added_live;
+		DROP INDEX IF EXISTS idx_books_rate_live_4;
+		DROP INDEX IF EXISTS idx_books_rate_live_mid;
 		ALTER TABLE books DROP COLUMN source_key;
 		ALTER TABLE books DROP COLUMN missing;
 		ALTER TABLE books DROP COLUMN library_id;
