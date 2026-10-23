@@ -282,6 +282,48 @@ the previous image's directory paths; the fix is to rewrite the whole
 script (paths AND tag) per build and verify the digest differs from the
 previous build before recording it.
 
+Review round 3 delivery on PR #22 (`4deea61`, image branch `ce991fb`):
+- Reader save failures are surfaced (non-blocking banner, cleared on the
+  next successful save; plain saves report too) — network/other server
+  errors were silent before.
+- The search page aborts superseded requests (AbortController threaded
+  through the api layer) instead of only ignoring responses.
+- Scoped genre search serves maintained per-library counts
+  (`library.<id>.genre_book_counts`, recorded by publication, seeded for
+  every library at initialization, backfilled transactionally on first
+  read; unavailable libraries get no scoped list, matching the direct
+  scan). The scoped list was a direct GROUP-BY scan per request (1-2s on
+  the 1.6M-row library) — now ~2ms.
+- Author pages are paginated server-side (`AuthorBooksPage`; the endpoint
+  accepts `limit`/`offset`, default full list for compatibility). The
+  largest author measured 1,942 visible books: full page 59-129ms, a
+  60-card page at offset 900 46ms. Reader digest drain and book-details
+  lazy metadata writes remain documented profiling candidates.
+- `SimilarBooks` returns ordinary card rows via `BooksByIDs` (structured
+  author references for author-page links).
+- Catalog-genre sample shelves display by title as documented.
+
+Acceptance evidence is endpoint-level (real server binary, real pages,
+authenticated user, concurrency, during-write measurements). Browser
+readiness is approximated by the home API pattern (config + shelves +
+covers concurrently: p95 341ms for the pattern); cover extraction is not
+part of the local benchmark (no archives in the harness root; real-cover
+serving was verified in-pod). Measured outstanding edges: concurrent
+deep-offset pages (~2.7s at 8-way, page ~1000) and the one-time
+initialization (~2-7s in the first-serve window on an upgraded database).
+Windows runtime acceptance remains outstanding (importer cross-compile
+verified earlier; runtime untested).
+
+Round-3 image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-ce991fb`
+resolves to `sha256:f257b916c65e47528a97fddcdf54d379915e94225626a23e1cd98ca9525948b5`
+for Linux/amd64, built from `codex/image-libraries-browsing` commit `ce991fb`
+(all review follow-ups through round 3). Registry digest matched the build
+metadata and differs from all previous page-latency digests. Evidence:
+`/private/tmp/polka-perf-image4/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+The digest-pinned live deployment was unchanged by publishing; this tag
+supersedes all earlier browsing tags for deployment.
+
 Review-fix image publication (no merge or deployment):
 `registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-e237644`
 resolves to `sha256:427655cd33cf9ee916d0a927730e2faac6d5f24f6cd8d83682caff929275d643`
