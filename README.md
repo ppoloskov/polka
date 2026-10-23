@@ -136,6 +136,8 @@ Missing books and disabled libraries are excluded from ordinary book results and
 file serving, while their catalog records and personal references are retained.
 The new INPX staging adapter validates complete index snapshots and preserves
 exact record identities; wiring it into existing import controls is still pending.
+The recursive folder adapter reads supported files without modifying the source,
+extracts FB2/EPUB metadata, and detects path/content changes using full SHA-256.
 
 Polka understands `.inpx` index files (MyHomeLib / Flibusta format) — both
 from the command line and from the web UI (*Manage → Import*):
