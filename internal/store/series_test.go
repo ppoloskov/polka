@@ -103,6 +103,7 @@ func TestMigrateV4Series(t *testing.T) {
 	if _, err := st.db.Exec(`
 		DROP TABLE book_series;
 		DROP TABLE libraries;
+		DROP INDEX idx_books_library_source;
 		ALTER TABLE books DROP COLUMN source_key;
 		ALTER TABLE books DROP COLUMN missing;
 		ALTER TABLE books DROP COLUMN library_id;

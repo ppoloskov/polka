@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"path/filepath"
 	"testing"
 )
@@ -325,4 +327,54 @@ func snapshotBookIDNoFail(st *Store, libraryID, key string) (int64, error) {
 	var id int64
 	err := st.DB().QueryRow(`SELECT id FROM books WHERE library_id = ? AND source_key = ?`, libraryID, key).Scan(&id)
 	return id, err
+}
+
+func TestPublishLibraryRejectsExhaustedBookIDRange(t *testing.T) {
+	st, ctx := snapshotStore(t)
+	libraryID := snapshotLibrary(t, st, ctx, "exhausted-ids")
+	const maxBookID = math.MaxInt64
+	if _, err := st.DB().Exec(`UPDATE meta SET value=? WHERE key=?`, fmt.Sprint(maxBookID), bookIDHighWaterKey); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := newTestSnapshot(t, ctx, snapshotEntry("record:new", "No ID available"))
+	if _, err := st.PublishLibrary(ctx, libraryID, snapshot, false); err == nil {
+		t.Fatal("publication succeeded with an exhausted book ID range")
+	}
+	if _, err := snapshotBookIDNoFail(st, libraryID, "record:new"); err == nil {
+		t.Fatal("exhausted ID publication left a book row")
+	}
+	if got := st.GetMeta(ctx, bookIDHighWaterKey, ""); got != fmt.Sprint(maxBookID) {
+		t.Fatalf("high-water mark changed to %q, want %d", got, maxBookID)
+	}
+}
+
+func TestPublishLibraryReusesExistingEntitiesAndIndexesNewOnes(t *testing.T) {
+	st, ctx := snapshotStore(t)
+	libraryID := snapshotLibrary(t, st, ctx, "entity-cache")
+	first := snapshotEntry("record:first", "First title")
+	first.book.Authors = []AuthorName{{Last: "SharedAuthor"}}
+	first.book.SeriesList = []SeriesRef{{Title: "SharedSeries", SeqNumber: 1}}
+	if err := publishTestSnapshot(t, st, ctx, libraryID, first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := snapshotEntry("record:second", "Second title")
+	second.book.Authors = []AuthorName{{ID: 77, Last: "SharedAuthor"}, {Last: "NewAuthor"}}
+	second.book.SeriesList = []SeriesRef{{Title: "SharedSeries", SeqNumber: 2}, {Title: "NewSeries", SeqNumber: 1}}
+	if err := publishTestSnapshot(t, st, ctx, libraryID, second); err != nil {
+		t.Fatal(err)
+	}
+	for table, want := range map[string]int{"authors": 2, "authors_search": 2, "series": 2, "series_search": 2} {
+		var got int
+		if err := st.DB().QueryRow(`SELECT count(*) FROM ` + table).Scan(&got); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if got != want {
+			t.Errorf("%s count = %d, want %d", table, got, want)
+		}
+	}
+	secondID := snapshotBookID(t, st, libraryID, "record:second")
+	if !snapshotSearchIndexed(t, st, secondID) {
+		t.Fatal("new book was not added to full-text search")
+	}
 }

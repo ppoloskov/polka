@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -191,8 +192,11 @@ func TestAPIEndToEnd(t *testing.T) {
 	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/png" {
 		t.Errorf("cover: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
-	if got := resp.Header.Get("Cache-Control"); got != "private, no-cache, must-revalidate" {
+	if got := resp.Header.Get("Cache-Control"); got != "private, max-age=0, must-revalidate" {
 		t.Errorf("cover Cache-Control = %q", got)
+	}
+	if resp.Header.Get("ETag") == "" {
+		t.Error("cover ETag is missing")
 	}
 
 	// fb2 download
@@ -230,4 +234,69 @@ func itoa(v int) string { return itoa64(int64(v)) }
 func itoa64(v int64) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+// Covers carry a strong ETag (book ID + per-library cover generation) so
+// conditional requests revalidate as cheap 304s, and a committed publish —
+// even one without catalog changes — rotates the tag because it may have
+// replaced cover content.
+func TestCoverETagRevalidation(t *testing.T) {
+	f := newFullServer(t, "public")
+	ctx := context.Background()
+	coverURL := f.ts.URL + "/Images/covers/" + itoa64(f.bookID)
+
+	get := func(ifNoneMatch string) (int, string, []byte) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, coverURL, nil)
+		if ifNoneMatch != "" {
+			req.Header.Set("If-None-Match", ifNoneMatch)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, resp.Header.Get("ETag"), body
+	}
+
+	status, etag, body := get("")
+	if status != http.StatusOK || len(body) == 0 {
+		t.Fatalf("cover -> %d, %d bytes", status, len(body))
+	}
+	if want := "\"" + itoa64(f.bookID) + "-0\""; etag != want {
+		t.Fatalf("cover ETag = %q, want %q", etag, want)
+	}
+
+	// A matching tag (or "*") revalidates without a body.
+	for _, inm := range []string{etag, "*"} {
+		status, got, body := get(inm)
+		if status != http.StatusNotModified || len(body) != 0 {
+			t.Errorf("If-None-Match %q -> %d, %d bytes; want 304 and an empty body", inm, status, len(body))
+		}
+		if got != etag {
+			t.Errorf("304 ETag = %q, want %q", got, etag)
+		}
+	}
+
+	// An unchanged legacy publish still bumps the cover generation.
+	snapshot, err := store.NewSnapshot(f.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.PublishLibrary(ctx, "legacy", snapshot, true); err != nil {
+		snapshot.Close()
+		t.Fatal(err)
+	}
+	if err := snapshot.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	status, rotated, body := get(etag)
+	if status != http.StatusOK || len(body) == 0 {
+		t.Errorf("stale If-None-Match after publish -> %d, %d bytes; want 200 with a body", status, len(body))
+	}
+	if want := "\"" + itoa64(f.bookID) + "-1\""; rotated != want {
+		t.Errorf("cover ETag after publish = %q, want %q", rotated, want)
+	}
 }

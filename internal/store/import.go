@@ -114,7 +114,12 @@ func (im *ImportSession) begin() error {
 		return err
 	}
 	im.tx = tx
+	return im.prepare()
+}
 
+func (im *ImportSession) prepare() error {
+	tx := im.tx
+	var err error
 	prep := func(q string) *sql.Stmt {
 		if err != nil {
 			return nil
@@ -129,8 +134,8 @@ func (im *ImportSession) begin() error {
 		author:  prep(`INSERT INTO authors (last_name, first_name, middle_name) VALUES (?, ?, ?)`),
 		genre:   prep(`INSERT INTO genres (code) VALUES (?)`),
 		keyword: prep(`INSERT INTO keywords (name) VALUES (?)`),
-		book: prep(`INSERT INTO books (id, lib_id, title, series_id, series_num, folder_id, file, ext, size, lang, year, added, lib_rate, deleted)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		book: prep(`INSERT INTO books (id, lib_id, title, series_id, series_num, folder_id, file, ext, size, lang, year, added, lib_rate, deleted, file_hash, content_hash, isbn, library_id, source_key)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		bs: prep(`INSERT INTO book_series (book_id, series_id, series_num, position) VALUES (?, ?, ?, ?)`),
 		ba: prep(`INSERT OR IGNORE INTO book_authors (book_id, author_id) VALUES (?, ?)`),
 		bg: prep(`INSERT OR IGNORE INTO book_genres (book_id, genre_id) VALUES (?, ?)`),
@@ -163,7 +168,91 @@ func lookup(cache map[string]int64, key string, ins *sql.Stmt) (int64, error) {
 	return id, nil
 }
 
+func newImportSessionForTx(s *Store, ctx context.Context, tx *sql.Tx) (*ImportSession, int64, int64, error) {
+	im := &ImportSession{
+		s: s, ctx: ctx, tx: tx,
+		folders: make(map[string]int64, 1024), series: make(map[string]int64, 1<<16),
+		authors: make(map[AuthorName]int64, 1<<17), genres: make(map[string]int64, 256),
+		keywords: make(map[string]int64, 1<<14),
+	}
+	if err := im.prepare(); err != nil {
+		return nil, 0, 0, err
+	}
+	loadStrings := func(query string, dst map[string]int64) error {
+		rows, err := tx.QueryContext(ctx, query)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			var value string
+			if err := rows.Scan(&id, &value); err != nil {
+				return err
+			}
+			dst[value] = id
+		}
+		return rows.Err()
+	}
+	for _, source := range []struct {
+		query string
+		cache map[string]int64
+	}{
+		{`SELECT id,name FROM folders`, im.folders}, {`SELECT id,title FROM series`, im.series},
+		{`SELECT id,code FROM genres`, im.genres}, {`SELECT id,name FROM keywords`, im.keywords},
+	} {
+		if err := loadStrings(source.query, source.cache); err != nil {
+			return nil, 0, 0, err
+		}
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id,last_name,first_name,middle_name FROM authors`)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	for rows.Next() {
+		var id int64
+		var author AuthorName
+		if err := rows.Scan(&id, &author.Last, &author.First, &author.Middle); err != nil {
+			rows.Close()
+			return nil, 0, 0, err
+		}
+		im.authors[author] = id
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, 0, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, 0, 0, err
+	}
+	var maxAuthorID, maxSeriesID int64
+	if err := tx.QueryRowContext(ctx, `SELECT coalesce(max(id),0) FROM authors`).Scan(&maxAuthorID); err != nil {
+		return nil, 0, 0, err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT coalesce(max(id),0) FROM series`).Scan(&maxSeriesID); err != nil {
+		return nil, 0, 0, err
+	}
+	return im, maxAuthorID, maxSeriesID, nil
+}
+
 func (im *ImportSession) Add(b *BookInput) error {
+	bookID, err := allocateBookID(im.ctx, im.tx)
+	if err != nil {
+		return fmt.Errorf("book %q ID: %w", b.Title, err)
+	}
+	if err := im.addBook(bookID, b); err != nil {
+		return err
+	}
+	im.stats.Books++
+	im.batch++
+	if im.batch >= importBatchSize {
+		return im.commitBatch()
+	}
+	return nil
+}
+
+// addBook inserts a book and its relations using this session's prepared statements and lookup caches.
+func (im *ImportSession) addBook(bookID int64, b *BookInput) error {
 	folderID, err := lookup(im.folders, b.Folder, im.stmts.folder)
 	if err != nil {
 		return fmt.Errorf("folder %q: %w", b.Folder, err)
@@ -191,16 +280,16 @@ func (im *ImportSession) Add(b *BookInput) error {
 		year = b.Year
 	}
 
-	bookID, err := allocateBookID(im.ctx, im.tx)
-	if err != nil {
-		return fmt.Errorf("book %q ID: %w", b.Title, err)
+	libraryID := b.LibraryID
+	if libraryID == "" {
+		libraryID = "legacy"
 	}
 	_, err = im.stmts.book.Exec(bookID, b.LibID, b.Title, seriesID, seriesNum, folderID,
-		b.File, b.Ext, b.Size, b.Lang, year, b.Added, b.Rate, boolToInt(b.Deleted))
+		b.File, b.Ext, b.Size, b.Lang, year, b.Added, b.Rate, boolToInt(b.Deleted),
+		b.FileHash, b.ContentHash, NormalizeISBN(b.ISBN), libraryID, b.SourceKey)
 	if err != nil {
 		return fmt.Errorf("book %q: %w", b.Title, err)
 	}
-
 	for position, ref := range series {
 		id, err := lookup(im.series, ref.Title, im.stmts.series)
 		if err != nil {
@@ -212,7 +301,8 @@ func (im *ImportSession) Add(b *BookInput) error {
 	}
 
 	for _, a := range b.Authors {
-		id, ok := im.authors[a]
+		key := AuthorName{Last: a.Last, First: a.First, Middle: a.Middle}
+		id, ok := im.authors[key]
 		if !ok {
 			res, err := im.stmts.author.Exec(a.Last, a.First, a.Middle)
 			if err != nil {
@@ -221,7 +311,7 @@ func (im *ImportSession) Add(b *BookInput) error {
 			if id, err = res.LastInsertId(); err != nil {
 				return err
 			}
-			im.authors[a] = id
+			im.authors[key] = id
 		}
 		if _, err := im.stmts.ba.Exec(bookID, id); err != nil {
 			return err
@@ -246,11 +336,6 @@ func (im *ImportSession) Add(b *BookInput) error {
 		}
 	}
 
-	im.stats.Books++
-	im.batch++
-	if im.batch >= importBatchSize {
-		return im.commitBatch()
-	}
 	return nil
 }
 

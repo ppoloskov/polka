@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS libraries (
 ALTER TABLE books ADD COLUMN library_id TEXT NOT NULL DEFAULT 'legacy';
 ALTER TABLE books ADD COLUMN missing INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE books ADD COLUMN source_key TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_books_library_source ON books (library_id, source_key);
 INSERT INTO libraries (id, name, kind, root, source_path, enabled)
 SELECT 'legacy', coalesce((SELECT value FROM meta WHERE key = 'collection_name' AND trim(value) != ''), 'Library'), 'legacy', '', '', 1
 WHERE NOT EXISTS (SELECT 1 FROM libraries WHERE id = 'legacy');

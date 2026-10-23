@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,7 +52,7 @@ type UpdateStats struct {
 // LibraryBookCount counts visible catalog rows belonging to one library.
 func (s *Store) LibraryBookCount(ctx context.Context, libraryID string) (int, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM books WHERE library_id=? AND deleted=0 AND missing=0`, libraryID).Scan(&n)
+	err := s.readDB.QueryRowContext(ctx, `SELECT count(*) FROM books WHERE library_id=? AND deleted=0 AND missing=0`, libraryID).Scan(&n)
 	return n, err
 }
 
@@ -196,9 +197,6 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 	if staged == 0 && !allowEmpty {
 		return stats, errors.New("empty library snapshot is not allowed")
 	}
-	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_books_library_source ON books(library_id, source_key)`); err != nil {
-		return stats, err
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return stats, err
@@ -211,12 +209,16 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 	if exists == 0 {
 		return stats, ErrNotFound
 	}
+	var highWater int64
+	if err := tx.QueryRowContext(ctx, `SELECT CAST(value AS INTEGER) FROM meta WHERE key=?`, bookIDHighWaterKey).Scan(&highWater); err != nil {
+		return stats, fmt.Errorf("read book ID high-water mark: %w", err)
+	}
+	initialHighWater := highWater
+	var writer *ImportSession
+	var maxAuthorID, maxSeriesID int64
 	// Mark currently present source rows so the staged keys can restore matches
 	// and the rows left marked at the end are newly missing.
 	if _, err := tx.ExecContext(ctx, `UPDATE books SET missing=2 WHERE library_id=? AND source_key!='' AND missing=0`, libraryID); err != nil {
-		return stats, err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM book_search WHERE rowid IN (SELECT id FROM books WHERE library_id=? AND source_key!='')`, libraryID); err != nil {
 		return stats, err
 	}
 	rows, err := snapshot.db.QueryContext(ctx, `SELECT source_key, book_json FROM records ORDER BY source_key`)
@@ -243,15 +245,23 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 		var missing int
 		err := tx.QueryRowContext(ctx, `SELECT id, missing FROM books WHERE library_id=? AND source_key=?`, libraryID, key).Scan(&id, &missing)
 		if errors.Is(err, sql.ErrNoRows) {
-			id, err := addBookTx(ctx, tx, &book)
-			if err != nil {
-				return stats, err
+			if highWater == math.MaxInt64 {
+				return stats, errors.New("book ID range is exhausted")
 			}
-			if book.Deleted {
-				if _, err := tx.ExecContext(ctx, `UPDATE books SET missing=1 WHERE id=?`, id); err != nil {
+			if writer == nil {
+				writer, maxAuthorID, maxSeriesID, err = newImportSessionForTx(s, ctx, tx)
+				if err != nil {
 					return stats, err
 				}
-				if _, err := tx.ExecContext(ctx, `DELETE FROM book_search WHERE rowid=?`, id); err != nil {
+			}
+			highWater++
+			sourceDeleted := book.Deleted
+			book.Deleted = false
+			if err := writer.addBook(highWater, &book); err != nil {
+				return stats, err
+			}
+			if sourceDeleted {
+				if _, err := tx.ExecContext(ctx, `UPDATE books SET missing=1 WHERE id=?`, highWater); err != nil {
 					return stats, err
 				}
 			}
@@ -261,11 +271,15 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 		if err != nil {
 			return stats, err
 		}
-		wasMissing := missing == 1
+		wasMissing := missing != 2
 		if _, err := tx.ExecContext(ctx, `UPDATE books SET missing=? WHERE id=?`, boolToInt(book.Deleted), id); err != nil {
 			return stats, err
 		}
-		if !book.Deleted {
+		if book.Deleted {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM book_search WHERE rowid=?`, id); err != nil {
+				return stats, err
+			}
+		} else if wasMissing {
 			if err := restoreBookSearchTx(ctx, tx, id); err != nil {
 				return stats, err
 			}
@@ -285,6 +299,9 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 	if _, err := tx.ExecContext(ctx, `UPDATE books SET missing=1 WHERE library_id=? AND missing=2`, libraryID); err != nil {
 		return stats, err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM book_search WHERE rowid IN (SELECT id FROM books WHERE library_id=? AND source_key!='' AND missing=1)`, libraryID); err != nil {
+		return stats, err
+	}
 	if libraryID == "legacy" && snapshot.markLegacyUnkeyedMissing {
 		res, err := tx.ExecContext(ctx, `UPDATE books SET missing=1 WHERE library_id='legacy' AND source_key='' AND file_hash='' AND missing=0`)
 		if err != nil {
@@ -297,6 +314,26 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 		stats.Removed += int(removed)
 		if _, err := tx.ExecContext(ctx, `DELETE FROM book_search WHERE rowid IN (SELECT id FROM books WHERE library_id='legacy' AND source_key='' AND file_hash='' AND missing=1)`); err != nil {
 			return stats, err
+		}
+	}
+	if highWater != initialHighWater {
+		if _, err := tx.ExecContext(ctx, `UPDATE meta SET value=? WHERE key=?`, fmt.Sprint(highWater), bookIDHighWaterKey); err != nil {
+			return stats, fmt.Errorf("save book ID high-water mark: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO authors_search (rowid,name) SELECT id,trim(last_name || ' ' || first_name || ' ' || middle_name) FROM authors WHERE id>?`, maxAuthorID); err != nil {
+			return stats, fmt.Errorf("index new authors: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO series_search (rowid,title) SELECT id,title FROM series WHERE id>?`, maxSeriesID); err != nil {
+			return stats, fmt.Errorf("index new series: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO book_search (rowid,title,authors,series)
+			SELECT b.id,b.title,
+			       coalesce((SELECT group_concat(trim(a.last_name || ' ' || a.first_name || ' ' || a.middle_name), ' ')
+			                 FROM book_authors ba JOIN authors a ON a.id=ba.author_id WHERE ba.book_id=b.id),''),
+			       coalesce((SELECT group_concat(s.title, ' ') FROM book_series bs JOIN series s ON s.id=bs.series_id WHERE bs.book_id=b.id),'')
+			FROM books b WHERE b.id>? AND b.id<=? AND b.library_id=? AND b.deleted=0 AND b.missing=0`, initialHighWater, highWater, libraryID); err != nil {
+			return stats, fmt.Errorf("index new books: %w", err)
 		}
 	}
 	if snapshot.inpxHash != "" {
@@ -321,12 +358,23 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 			return stats, err
 		}
 	}
+	// Covers can change on any committed publish (the server resets the
+	// cover cache), so bump the per-library cover generation backing the
+	// cover ETag validator regardless of the diff content.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO meta (key, value) VALUES (?, '1')
+		ON CONFLICT (key) DO UPDATE SET value = CAST(CAST(meta.value AS INTEGER) + 1 AS TEXT)`, "library."+libraryID+".cover_gen"); err != nil {
+		return stats, err
+	}
 	if err := ctx.Err(); err != nil {
 		return stats, err
 	}
 	if err := tx.Commit(); err != nil {
 		return stats, err
 	}
+	// Refresh planner statistics after a large publish. The catalog is
+	// already committed, so an ANALYZE failure is not fatal.
+	_, _ = s.db.ExecContext(ctx, `ANALYZE`)
 	return stats, nil
 }
 

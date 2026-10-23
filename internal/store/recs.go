@@ -14,7 +14,7 @@ import (
 // Books from the same series are excluded — they are already on the card.
 func (s *Store) SimilarBooks(ctx context.Context, bookID int64, limit int, libraryIDs ...string) ([]Book, error) {
 	libraryID := scopeLibraryID(libraryIDs)
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.readDB.QueryContext(ctx, `
 		WITH seed AS (SELECT series_id FROM books WHERE id = ?1),
 		seed_genres AS (SELECT genre_id FROM book_genres WHERE book_id = ?1),
 		seed_kw AS (SELECT keyword_id FROM book_keywords WHERE book_id = ?1),
@@ -310,7 +310,7 @@ func idsToArgs(ids []int64) []any {
 }
 
 func (s *Store) queryIDs(ctx context.Context, q string, args ...any) ([]int64, error) {
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	rows, err := s.readDB.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -87,6 +87,37 @@ describe("AdminLibraryPage library management", () => {
     expect(screen.getByLabelText(t("admin.libraries.renameLabel", { name: "Legacy" }))).toBeInTheDocument();
   });
 
+  it("shows named-library update progress when the library list cannot load", async () => {
+    fetchAdminLibraries.mockRejectedValue(new Error("Request failed with status code 504"));
+    importStatus.mockResolvedValue({ running: true, phase: "loading", libraryId: "named-1", processed: 123 });
+    renderPage();
+
+    const progress = await waitFor(() => {
+      const element = document.querySelector(".library-admin__status--loading");
+      expect(element).toBeInTheDocument();
+      return element;
+    });
+    expect(progress).toHaveTextContent(t("admin.import.loading"));
+    expect(progress).toHaveTextContent(t("admin.import.processed", { n: "123" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("504");
+  });
+
+  it("shows named-library indexing progress beside a loaded library card", async () => {
+    const named = { id: "named-1", name: "Named", kind: "folder", root: "/books/named", enabled: true };
+    fetchAdminLibraries.mockResolvedValue({ libraries: [legacy, named] });
+    importStatus.mockResolvedValue({ running: true, phase: "indexing", libraryId: "named-1", processed: 456 });
+    renderPage();
+
+    const progress = await waitFor(() => {
+      const element = document.querySelector(".library-admin__status--indexing");
+      expect(element).toBeInTheDocument();
+      return element;
+    });
+    expect(progress).toHaveTextContent("Named");
+    expect(progress).toHaveTextContent("456");
+    expect(screen.getByLabelText(t("admin.libraries.renameLabel", { name: "Named" }))).toBeInTheDocument();
+  });
+
   it("requires an explicit empty-source choice and confirmation", async () => {
     vi.stubGlobal("confirm", vi.fn(() => true));
     renderPage();

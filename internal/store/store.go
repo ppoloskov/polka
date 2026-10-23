@@ -4,24 +4,27 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/vestigiumincaligne/polka/internal/sqlitedrv"
 )
 
 type Store struct {
-	db *sql.DB
+	db     *sql.DB
+	readDB *sql.DB
 }
 
 func Open(path string) (*Store, error) {
-	db, err := sqlitedrv.Open(path, sqlitedrv.Options{
+	opts := sqlitedrv.Options{
 		WAL: true, SyncNormal: true, BusyTimeout: 10000, ForeignKeys: true,
-	})
+	}
+	db, err := sqlitedrv.Open(path, opts)
 	if err != nil {
 		return nil, err
 	}
-	// SQLite is a single-writer database; one connection prevents SQLITE_BUSY
-	// between inserts and reads within the process, while WAL allows concurrent reads.
+	// Keep every writer on one connection so SQLite writes stay serialized.
 	db.SetMaxOpenConns(1)
 
 	s := &Store{db: db}
@@ -29,10 +32,29 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	// In-memory databases are connection-local unless opened with a shared
+	// cache URI. Reuse the writer in that case; file databases get a WAL reader.
+	if strings.Contains(path, ":memory:") {
+		s.readDB = db
+	} else {
+		reader, err := sqlitedrv.Open(path, opts)
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		reader.SetMaxOpenConns(1)
+		s.readDB = reader
+	}
 	return s, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	readErr := s.readDB.Close()
+	if s.readDB == s.db {
+		return readErr
+	}
+	return errors.Join(readErr, s.db.Close())
+}
 
 func (s *Store) DB() *sql.DB { return s.db }
 
@@ -101,7 +123,7 @@ func (s *Store) migrate() error {
 
 func (s *Store) BookCount(ctx context.Context) (int, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `
+	err := s.readDB.QueryRowContext(ctx, `
 		SELECT count(*) FROM books b JOIN libraries l ON l.id = b.library_id
 		WHERE b.deleted = 0 AND b.missing = 0 AND l.enabled = 1`).Scan(&n)
 	return n, err
@@ -109,7 +131,7 @@ func (s *Store) BookCount(ctx context.Context) (int, error) {
 
 func (s *Store) GetMeta(ctx context.Context, key, def string) string {
 	var v string
-	if err := s.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, key).Scan(&v); err != nil {
+	if err := s.readDB.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, key).Scan(&v); err != nil {
 		return def
 	}
 	return v

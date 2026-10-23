@@ -50,6 +50,10 @@ func (s *Store) AddBook(ctx context.Context, b *BookInput) (int64, error) {
 }
 
 func addBookTx(ctx context.Context, tx *sql.Tx, b *BookInput) (int64, error) {
+	bookID, err := allocateBookID(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
 	folderID, err := lookupOrInsert(ctx, tx,
 		`SELECT id FROM folders WHERE name = ?`, `INSERT INTO folders (name) VALUES (?)`, nil, b.Folder)
 	if err != nil {
@@ -81,10 +85,6 @@ func addBookTx(ctx context.Context, tx *sql.Tx, b *BookInput) (int64, error) {
 	var year any
 	if b.Year > 0 {
 		year = b.Year
-	}
-	bookID, err := allocateBookID(ctx, tx)
-	if err != nil {
-		return 0, err
 	}
 	libraryID := b.LibraryID
 	if libraryID == "" {
@@ -226,7 +226,7 @@ func (s *Store) SetBookDigest(ctx context.Context, digest string, bookID int64) 
 // BookIDByDigest maps a KOReader document digest back to a book.
 func (s *Store) BookIDByDigest(ctx context.Context, digest string) (int64, error) {
 	var id int64
-	err := s.db.QueryRowContext(ctx, `SELECT book_id FROM book_digests WHERE digest = ?`, digest).Scan(&id)
+	err := s.readDB.QueryRowContext(ctx, `SELECT book_id FROM book_digests WHERE digest = ?`, digest).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, ErrNotFound
 	}
@@ -318,7 +318,7 @@ func (s *Store) BookFilesByIDs(ctx context.Context, ids []int64) ([]BookFile, er
 	for i, id := range ids {
 		args[i] = id
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.readDB.QueryContext(ctx, `
 		SELECT b.id, b.title, fo.name, b.file, b.ext, b.size
 		FROM books b JOIN folders fo ON fo.id = b.folder_id
 		WHERE b.deleted = 0 AND b.missing = 0

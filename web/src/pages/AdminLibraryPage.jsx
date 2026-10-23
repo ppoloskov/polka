@@ -169,6 +169,19 @@ const LibraryManagement = ({ status, busy, setBusy, refreshStatus, startPolling 
           })}
         </ul>
       )}
+      {status?.libraryId && status.libraryId !== "legacy" &&
+        (status.running || (!libraries.some((item) => item.id === status.libraryId) && (status.phase === "done" || status.phase === "error"))) && (
+          <div className={`library-admin__status library-admin__status--${status.phase}`} role={status.phase === "error" ? "alert" : undefined}>
+            {status.running && <span className="library-admin__spinner" aria-hidden="true" />}
+            <span>{libraries.find((item) => item.id === status.libraryId)?.name || status.libraryId}: {PHASE_LABELS()[status.phase] ?? status.phase}</span>
+            {status.running && ["loading", "indexing"].includes(status.phase) && status.processed > 0 &&
+              <span>{t("admin.import.processed", { n: status.processed.toLocaleString() })}</span>}
+            {!status.running && status.phase === "done" &&
+              <span>{t("admin.libraries.diff", { added: status.added ?? 0, removed: status.removed ?? 0, changed: status.changed ?? 0, unchanged: status.unchanged ?? 0 })}</span>}
+            {!status.running && status.phase === "error" &&
+              <span>{t("admin.libraries.updateError", { err: status.error || "" })}</span>}
+          </div>
+        )}
       <div className="library-admin__library-create">
         <h3>{t("admin.libraries.createTitle")}</h3>
         <div className="library-admin__library-form">
