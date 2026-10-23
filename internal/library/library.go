@@ -424,6 +424,75 @@ func (l *Library) sidecarCover(folder, file string) ([]byte, string, bool) {
 	return nil, "", false
 }
 
+// sidecarBinary looks for an illustration in images/<archive>.zip|7z,
+// where Flibusta dumps store stripped <binary> payloads as <bookid>/<imageid>.
+// The conventional "cover" id falls back to the covers/ sidecar.
+func (l *Library) sidecarBinary(folder, file, id string) ([]byte, string, bool) {
+	base := strings.TrimSuffix(filepath.Base(folder), filepath.Ext(folder))
+	if base == "" {
+		return nil, "", false
+	}
+	want := file + "/" + id
+	for _, aext := range []string{".zip", ".7z"} {
+		ap := filepath.Join(l.root, "images", base+aext)
+		if d, m, ok := namedImageEntry(ap, want); ok {
+			return d, m, true
+		}
+	}
+	if id == "cover" {
+		return l.sidecarCover(folder, file)
+	}
+	return nil, "", false
+}
+
+// namedImageEntry pulls the entry with the exact given name out of an
+// archive (images/ stores illustrations as <bookid>/<imageid> with no
+// extension), detecting the type by content.
+func namedImageEntry(archivePath, want string) ([]byte, string, bool) {
+	if _, err := os.Stat(archivePath); err != nil {
+		return nil, "", false
+	}
+	match := func(name string, open func() (io.ReadCloser, error)) ([]byte, string, bool) {
+		if name != want {
+			return nil, "", false
+		}
+		rc, err := open()
+		if err != nil {
+			return nil, "", false
+		}
+		defer rc.Close()
+		data, err := io.ReadAll(rc)
+		if err != nil || len(data) == 0 {
+			return nil, "", false
+		}
+		return data, sniffImageMime(data), true
+	}
+	if strings.EqualFold(filepath.Ext(archivePath), ".7z") {
+		zr, err := sevenzip.OpenReader(archivePath)
+		if err != nil {
+			return nil, "", false
+		}
+		defer zr.Close()
+		for _, e := range zr.File {
+			if d, m, ok := match(e.Name, e.Open); ok {
+				return d, m, true
+			}
+		}
+		return nil, "", false
+	}
+	zr, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return nil, "", false
+	}
+	defer zr.Close()
+	for _, e := range zr.File {
+		if d, m, ok := match(e.Name, e.Open); ok {
+			return d, m, true
+		}
+	}
+	return nil, "", false
+}
+
 // sniffImageMime detects an image MIME from its signature (covers/ stores
 // covers with no extension); defaults to JPEG (the Flibusta format).
 func sniffImageMime(d []byte) string {
@@ -573,7 +642,15 @@ func (l *Library) Binary(folder, file, ext, id string) ([]byte, string, error) {
 			return nil, "", err
 		}
 		defer rc.Close()
-		return ExtractBinary(rc, id)
+		data, mime, err := ExtractBinary(rc, id)
+		if errors.Is(err, ErrNoFile) {
+			// Flibusta dumps strip <binary> payloads into sidecars.
+			if data, mime, ok := l.sidecarBinary(folder, file, id); ok {
+				data, mime = normalizeCover(data, mime)
+				return data, mime, nil
+			}
+		}
+		return data, mime, err
 	case strings.EqualFold(ext, "epub"):
 		rc, _, err := l.Open(folder, file, ext)
 		if err != nil {

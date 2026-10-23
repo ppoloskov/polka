@@ -428,6 +428,26 @@ func TestTextBinaryMeta(t *testing.T) {
 	if _, _, err := l.Binary("a.zip", "1", "fb2", "nope.png"); err == nil {
 		t.Error("unknown fb2 binary must fail")
 	}
+
+	// Flibusta sidecars: illustrations stripped from the FB2 live in
+	// images/<archive>.zip as <bookid>/<imageid>; "cover" falls back to
+	// the covers/ sidecar.
+	jpeg := []byte("\xFF\xD8\xFF\xE0jpegdata")
+	writeZip(t, filepath.Join(root, "images", "a.zip"), map[string][]byte{"1/ill": jpeg})
+	writeZip(t, filepath.Join(root, "covers", "a.zip"), map[string][]byte{"1": pngBytes})
+	if data, mime, err := l.Binary("a.zip", "1", "fb2", "ill"); err != nil || mime != "image/jpeg" || !bytes.Equal(data, jpeg) {
+		t.Errorf("sidecar image: %d %q %v", len(data), mime, err)
+	}
+	if data, mime, err := l.Binary("a.zip", "1", "fb2", "cover"); err != nil || mime != "image/png" || !bytes.Equal(data, pngBytes) {
+		t.Errorf("sidecar cover: %d %q %v", len(data), mime, err)
+	}
+	if _, _, err := l.Binary("a.zip", "1", "fb2", "nope"); !errors.Is(err, ErrNoFile) {
+		t.Errorf("no sidecar entry: %v", err)
+	}
+	// Embedded binaries still win over sidecars.
+	if data, _, err := l.Binary("a.zip", "1", "fb2", "other.png"); err != nil || !bytes.Equal(data, pngBytes) {
+		t.Errorf("embedded binary wins: %d %v", len(data), err)
+	}
 	data, mime, err = l.Binary("a.zip", "3", "epub", "OEBPS/img/cover.png")
 	if err != nil || !strings.HasPrefix(mime, "image/png") || !bytes.Equal(data, pngBytes) {
 		t.Errorf("epub binary: %q %v", mime, err)

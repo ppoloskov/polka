@@ -90,6 +90,18 @@ const open = async () => {
   await flush();
 };
 
+it("hides chapter images that fail to load", async () => {
+  fetchChapter.mockImplementation(async (_bookId, index) => ({
+    index,
+    html: `<p><img class="fb2-img" src="/api/v1/read/1/img/${index}"/></p>`,
+  }));
+  await open();
+  const img = document.querySelector(".reader__content img");
+  expect(img).not.toBeNull();
+  fireEvent.error(img);
+  expect(img.classList.contains("fb2-img-missing")).toBe(true);
+});
+
 it("restores device progress without publishing a browser update", async () => {
   await open();
   await flush(1500);

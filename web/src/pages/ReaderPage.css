@@ -333,6 +333,11 @@
   margin: 1.8em auto;
 }
 
+/* Broken and unavailable illustrations (e.g. stripped FB2 dumps). */
+.reader__content .fb2-img-missing {
+  display: none;
+}
+
 .reader__content .fb2-note-ref a {
   color: inherit;
   font-weight: 700;
