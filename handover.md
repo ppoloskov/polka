@@ -215,6 +215,53 @@ acknowledging the pairs. Delivered in PR #21 (`d462cd0`): `auth.MergeBookRefs`
 now takes the ordered pair slice (`auth.BookRefPair`) and applies pairs in
 publication order, with a 20-round chained replay regression test.
 
+Page-latency delivery (target: home, book-list and book-detail pages under
+1s at p95 against the real catalog), delivered in PR #22 (`f579688`, based
+on #21). Measured end-to-end on a copy of the live 1.6M-row catalog
+(664k visible; a disabled legacy library interleaved with enabled ones;
+authenticated bench user with seeded reading progress):
+
+- Maintained counters: publication records `visible_book_count` and
+  per-genre counts in meta inside the publication transaction; direct
+  mutations recompute eagerly. The inline 1.4s visible-count scan no longer
+  rides user requests (measured 1.7s p95 on getConfig before).
+- Partial live indexes (added/rate over deleted=0, missing=0) remove
+  availability row fetches from shelf walks.
+- Per-genre visible member lists: built once per genre, paginated in memory,
+  dropped on every visibility change (deletion, restore, publish sweep —
+  regression-tested). A 107k-member genre paid 92-180ms per page before.
+- Reader pool 1 → 8 WAL readers: one reader connection serialized all reads
+  behind the slowest query (genre recommendations measured 10.7s at 8-way
+  concurrency). In-process read parallelism remains capped by the pure-Go
+  driver's process-wide serialization (~1.2x measured); warm pages are now
+  cheap enough that p95 holds: genre recs 10.7s → 0.39s, home 0.36s → 0.07s
+  at c=8; pages hold p95 46ms during concurrent admin writes.
+
+Measured edges (documented in the PR): deep-offset pagination of the
+built-in newest shelf (~page 1000) ~270ms single / ~2.8s at 8-way
+concurrency; the first request per genre builds its member list (~200ms for
+the largest); an upgraded pre-count database computes totals once (~7s) on
+the first visibility read and records them. A literal enabled-library
+IN-list replacing the availability EXISTS was tried and reverted (planner
+regression: 2.2s deep page); the note stays in code.
+
+Benchmark harness (disposable, not committed): /private/tmp/polka-perf —
+server binary + DB copies + `drive.mjs` (p50/p95/max per endpoint,
+concurrency), endpoint lists in eps*.txt. Rebuild: `NODE_OPTIONS=
+--no-experimental-webstorage npm run build` in web/ then target build with
+-tags nodynamic; note `go:embed all:dist` needs web/dist present.
+
+Page-latency image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-448e7ae`
+resolves to `sha256:7f96a1d2b2021e32658e9b93437731d562178f93e200377927e899795015eda5`
+for Linux/amd64, built from `codex/image-libraries-browsing` commit `448e7ae`
+(the full browsing stack through #22 with maintained counters, partial live
+indexes, per-genre member lists, reader pool 8). Registry digest matched the
+build metadata. Evidence:
+`/private/tmp/polka-perf-image/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+The digest-pinned live deployment was unchanged by publishing; this tag
+supersedes all earlier browsing tags for deployment.
+
 Ordered-merge image publication (no merge or deployment):
 `registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-e83c6a1`
 resolves to `sha256:4284c466462222c1d1e916f80a9d694b1ffde80b021c27fbf917395206349854`
