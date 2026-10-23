@@ -27,6 +27,28 @@ const post = async (path) => {
   return res.json();
 };
 
+const postJson = async (path, value) => {
+  const res = await fetch(api.buildUrl(path), {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", "X-Polka-Lang": getLang() },
+    body: JSON.stringify(value),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    const err = new Error(text || `Request failed: ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+};
+
+export const fetchAdminLibraries = () => api.getJson("admin/libraries");
+export const createLibrary = (library) => postJson("admin/libraries", library);
+export const updateLibrary = (id, changes) => postJson(`admin/libraries/${encodeURIComponent(id)}`, changes);
+export const startLibraryUpdate = (id, { allowEmpty = false } = {}) =>
+  postJson(`admin/libraries/${encodeURIComponent(id)}/update`, { allowEmpty });
+
 export const uploadBooks = (files, { force = false } = {}) => {
   const fd = new FormData();
   for (const f of files) fd.append("files", f);
