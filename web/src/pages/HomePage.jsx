@@ -16,7 +16,7 @@ const SHELF_TITLES = () => ({
   well_curated: { title: t("shelf.well_curated"), subtitle: t("shelf.well_curated.sub") },
 });
 
-const HomePage = ({ config }) => {
+const HomePage = ({ config, selectedLibraryId = "" }) => {
   const navigate = useNavigate();
   const [shelves, setShelves] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -25,7 +25,7 @@ const HomePage = ({ config }) => {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetchHomeShelves()
+    fetchHomeShelves({ libraryId: selectedLibraryId })
       .then((res) => {
         if (cancelled) return;
         setShelves(res?.shelves ?? []);
@@ -40,7 +40,7 @@ const HomePage = ({ config }) => {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [selectedLibraryId]);
 
   return (
     <div className="container homepage">
@@ -48,7 +48,7 @@ const HomePage = ({ config }) => {
         <div className="hero__content">
           <p className="hero__eyebrow">{t("home.eyebrow")}</p>
           <h1 className="hero__title">
-            {config?.numberOfBooks
+            {!selectedLibraryId && config?.numberOfBooks
               ? t("home.titleCount", { n: config.numberOfBooks.toLocaleString() })
               : t("home.title")}
           </h1>

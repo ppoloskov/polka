@@ -20,7 +20,7 @@ const SCOPES = () => [
   { id: "genres", label: t("scope.genres"), statKey: "genres" },
 ];
 
-const SearchPage = ({ config }) => {
+const SearchPage = ({ config, selectedLibraryId = "" }) => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -42,7 +42,7 @@ const SearchPage = ({ config }) => {
     }
     let cancelled = false;
     setLoading(true);
-    const params = { search: query, selectedGroupID: groupId };
+    const params = { search: query, selectedGroupID: groupId, libraryId: selectedLibraryId };
 
     fetchSearchStats(params).then((res) => !cancelled && setStats(res?.searchStats ?? null));
 
@@ -63,7 +63,7 @@ const SearchPage = ({ config }) => {
     return () => {
       cancelled = true;
     };
-  }, [query, scope, groupId, enabled]);
+  }, [query, scope, groupId, enabled, selectedLibraryId]);
 
   // Catalog with no query and no group — show random shelves by genre.
   const [catalogShelves, setCatalogShelves] = useState([]);
@@ -73,14 +73,14 @@ const SearchPage = ({ config }) => {
     if (enabled) return undefined;
     let cancelled = false;
     setCatalogLoading(true);
-    fetchCatalogShelves()
+    fetchCatalogShelves({ libraryId: selectedLibraryId })
       .then((res) => !cancelled && setCatalogShelves(res?.shelves ?? []))
       .catch(() => !cancelled && setCatalogShelves([]))
       .finally(() => !cancelled && setCatalogLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [enabled]);
+  }, [enabled, selectedLibraryId]);
 
   const setScope = (next) => {
     const params = new URLSearchParams(searchParams);
@@ -137,7 +137,7 @@ const SearchPage = ({ config }) => {
               onClick={() => setGroup(g.GroupID)}
             >
               {g.Title}
-              <span className="search-page__group-count">{g.numberOfBooks}</span>
+              {!selectedLibraryId && <span className="search-page__group-count">{g.numberOfBooks}</span>}
             </button>
           ))}
         </div>

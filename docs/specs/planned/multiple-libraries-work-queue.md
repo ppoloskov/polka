@@ -1,152 +1,77 @@
 # Multiple libraries: reviewable PR series
 
-User authorized implementation and PR publication on 2026-10-22. Target is
-`ppoloskov/polka`; PRs stack on preceding reviewed branches, with no merges.
-Luna agents write tests first, implement bounded work, and report evidence;
-architect reviews scope/style/behavior before Git publication.
+User authorized Luna implementation and publication on 2026-10-22, then requested
+consolidation and minimal completion. Target: `ppoloskov/polka`; no merges.
+Each branch stacks on the previous reviewed commit. Preserve unrelated primary
+checkout work; implementation lives in the attached multiple-libraries worktree.
 
-## Work packages
+| Package | Behavior | Delivery / validation |
+| --- | --- | --- |
+| Foundation | Additive migration, legacy binding, globally reserved IDs | PR #1, `3b8006c`; full Go checks and native upgrade |
+| Roots | Serve every book from its owning root | PR #2, `fde13fa`; full Go checks and native upgrade |
+| Snapshots | Disk-backed staging and atomic target-only publication | PR #3, `2a678ef`; full Go checks, rollback/repeat tests |
+| Availability | Missing/disabled excluded from browsing/files/cache hits | PR #4, `1e7616b`; full Go checks |
+| INPX | Strict complete staging and exact immutable keys | PR #8, `254d42f`; full Go checks, golden-key and 20k scale probe |
+| Folders | Recursive confined reads and full content hashes | PR #6, `4581178`; full Go checks |
+| Legacy adapters | Shared updater; no destructive replacement | PR #7, `e812276`; full Go checks and native upgrade/replace |
+| Management API | Register/name/enable/manual-update; diff status | PR #9, `e8d15a9`; full Go checks and HTTP lifecycle |
+| Catalog scope | Filter before pagination; source fields; personal retention | PR #10, `9ed3655`; full Go checks in pr10 |
+| Admin UI | Existing screen controls both sources and manual updates | PR #11, `eca0ab3`; 41 web tests/build and both binaries in pr11 |
+| Minimal completion | Reader selector/badges/unavailable cards; shared metadata parser | Implemented; final exact-head checks gate publication |
 
-| Package | Behavior and scope | Dependencies | Required validation | Status |
-| --- | --- | --- | --- | --- |
-| WP1 | Automatic additive default-library migration, registry, durable allocator shared by existing insert paths, reserve known auth refs before startup/import; newer-schema rejection. No source scans or changed public routes. | None | v5/v1/fresh/reopen, row/relation/deletion preservation, Clear/reopen/import/upload allocation | Published PR #1 |
-| WP2 | Resolve each book's owning root across all serving paths while preserving dynamic legacy root and uploads | WP1 | same config/root changes, two roots with same locator, reader/download/cover/export/email, existing suites | Published PR #2 |
-| WP3 | Disk-backed snapshot staging and atomic target-only publication; missing separate from admin deleted; preserve personal state and other libraries | WP1 | diff/idempotence/remove/reappear/admin hidden, rollback/error/cancel/restart, no global search/index clearing | Published PR #3 |
-| WP3b | Availability filtering before exposing update entrypoints; missing/disabled excluded from normal counts, browsing, files and cached chapters | WP2, WP3 | missing/disabled counts/search/author/series/file/recommendations, reader-cache removal and restore | Published PR #4 |
-| WP4a | Strict complete INPX staging and exact immutable record keys | WP3 | owned-copy stability, same/changed/source-deleted records, malformed/duplicate/corrupt input | Published PR #8 (replaces #5) |
-| WP4b | Saved-source updater and legacy CLI/web import adapters over same engine | WP3b, WP4a | path/upload/default target, failed replace preserves data, empty guard, unchanged old contracts | Published PR #7; exact checks and native upgrade pass |
-| WP5 | Recursive folder adapter, full-byte hashes, existing metadata parsers/fallback | WP2, WP3 | recursive add/change/remove, duplicate copies, symlinks/traversal/unreadable/unstable inputs, realistic source tree | Exact commit validated; PR #6 publication underway |
-| WP6a | Admin registration/name/enable/manual-update API and diff status | WP4, WP5 | saved-source lifecycle, corruption rollback, isolation, auth/demo/private paths/cache counts | Published PR #9; exact full checks pass |
-| WP6b | Combined or scoped catalog API, source metadata and unavailable personal cards | WP6a | filter-before-limit/counts/search/recs/collections and retained personal references | Reviewed; isolated store/server suites and vet pass |
-| WP6c | OPDS scope navigation and unavailable reading metadata | WP6b | scoped feed/pagination links and acquisition safety | Implementing separately |
-| WP6d | Existing admin UI management and reader library selection/source badges | WP6a, WP6b | existing and new UI tests/build plus rendered public workflow | Implementing admin screen first |
-| WP7 | Upgrade/restart and end-to-end acceptance, final compatibility cleanup/docs | All | previous-version data and unchanged config/clients; both source types; source failure; repeated updates; full Go/Node/build/vet; actual container proof where available | Pending |
+Full Go checks mean `go test ./...`, `go vet ./...`, server and desktop builds
+from each exact committed archive. Frontend checks use the unchanged lockfile;
+Node26 requires `NODE_OPTIONS=--no-experimental-webstorage`. GitHub check runs
+were absent on published heads; local evidence is not a GitHub CI result.
 
-Each package changes only its owned modules and necessary documentation. No
-unrelated cleanup, new abstractions, generated assets, local diagnostic files,
-dependency version changes, or inherited reader protocol changes. If a package
-exceeds a reviewable diff, split it at a tested behavior boundary before delivery.
-Every PR must pass its surrounding tests and preserve old workflow operation;
-all feature claims wait for WP7 operational acceptance.
+## Required final gate
 
-## Traceability and failure boundaries
+- Both source types: register without scan, update/repeat, add/change/remove,
+  unreadable/corrupt/empty failure, restart and durable diff/state behavior.
+- Same source IDs/locators across libraries: different public IDs, correct roots,
+  independent Polka progress, visible source names and unavailable personal cards.
+- Catalog filters/counts/pagination and bulk downloads use the visible library.
+- Old flags/env/mounts, login/session, import/upload, reader/download, lists,
+  ratings/progress and known orphan refs survive unchanged-config native upgrade.
+- Full Go/web checks and rendered UI review. Docker is absent locally; native
+  executable/data acceptance must not be described as an actual image swap.
 
-| Source requirement | Work coverage | Test/evidence | Status |
-| --- | --- | --- | --- |
-| Image-only upgrade; no setup/client change | WP1, WP2, WP4, WP7 | v1/v5 upgrade, unchanged mounts/flags, old endpoints and state | Pending |
-| Separate copies, no clashes | WP1, WP3–WP6 | two libraries same source ID/path, distinct public IDs/state | Pending |
-| Manual INPX and folder updates | WP3–WP6 | admin first-run, old CLI compatibility, repeat, durable diff and restart | Pending |
-| Failure leaves published catalog intact | WP3–WP5, WP7 | malformed/partial/missing/full-disk/cancel/commit fault tests | Pending |
-| Removed entries retain personal state | WP3, WP6, WP7 | separate users DB, unavailable list/history cards | Pending |
-| Per-root serving and existing source formats | WP2, WP4, WP5, WP7 | ZIP/7z/plain folder reader/cover/download/export/mail | Pending |
-| Minimal original style and slim PRs | Every WP | architect diff review; existing helper reuse; per-PR checks | Required |
+## Scope and gotchas
 
-Rollback: schema changes are additive; do not promise old binaries support a
-new schema. Operational downgrade uses a coherent pre-upgrade backup. Newer
-binaries reject unknown future schemas. Missing source data never triggers
-destructive fallback. No physical file deletion or automatic identity repair.
+No watchers, schedules, new dependencies/services, per-library DBs, generic jobs,
+source deletion, fuzzy matching, new management CLI or reader protocol changes.
+The optional OPDS filter patch is deferred outside the checkout under
+`/private/tmp/polka-validation/deferred-opds`; existing combined OPDS remains.
+The old bulk importer has only test-fixture callers; leave it rather than rewrite
+fixtures in this feature. Uploads and folder scans share metadata parsing.
 
-## Mock PR annotations
+Unknown legacy identities are never remapped. Folder moves/byte changes and
+INPX record corrections conservatively create new entries. Known persisted
+numeric refs seed the allocation floor; historical lost/offline-only refs cannot
+be reconstructed. KOReader's digest-only bridge cannot distinguish identical
+copies; Polka's numeric-ID progress is independently tested.
 
-- reviewer-blocker: any forced setup, config/mount/client change or lost numeric
-  reference on upgrade blocks the series, even if new-feature unit tests pass.
-- reviewer-test: source adapters must prove real entrypoints and durable repeat/
-  failure behavior. Unit-only evidence cannot certify operational acceptance.
-- reviewer-risk: unknown old IDs cannot be repaired from current rows; forward
-  safety must include every writer and known persisted personal reference.
+PR #5 was closed after a branch-name reuse; #8 is its exact validated replacement.
+Always audit head/base refs before pushing. No force pushes or merges.
 
-## Execution record
+## Final consolidation evidence
 
-Baseline Go tests passed for store/importer/library/server/config in the primary
-checkout with existing dependency versions. Revalidate isolated fork baseline.
-No Docker available locally; actual image acceptance is not yet demonstrated.
+The optional OPDS patch was parked, duplicate upload parsing was removed (48
+lines), and chronological handover/queue repetition was condensed. No fixture
+engine rewrite, new CLI, dependency, watcher or protocol change was added.
+Upload duplicate checks now stay within the legacy target, with HTTP coverage
+and a 55-foreign-candidate scope-before-limit regression. Byte-identical FB2
+copies have a real reader/progress regression proving separate Polka state.
+A four-line Windows guard skips unsupported directory sync after retained source
+files are synced; importer Windows cross-compilation passed, runtime untested.
 
-WP1 red tests failed on missing registry/reservation APIs, then passed after
-implementation. Focused store/importer/auth/CLI tests and desktop compile pass;
-store vet passes. Review removed generic schema introspection and custom UUID
-formatting in favor of ordinary migration SQL and stdlib opaque IDs. Corrected
-the old synthetic v4 fixture to remove later-version columns before migration;
-all original series assertions remain. Command regression proves reimport IDs
-exceed orphan user progress refs. Exact commit/full upgrade checks follow.
-Frontend baseline: unchanged lockfile install/build pass; Node 26 needs
-`NODE_OPTIONS=--no-experimental-webstorage` for all 34 tests to pass. No dependency
-or frontend source changes are needed for that environment difference.
-
-WP1 exact commit `3b8006c` passed full Go tests, full vet, and server/desktop
-builds from an isolated archive. Native old-binary -> candidate upgrade retained
-session/login, catalog ID/content, rating, list membership, normal/orphan progress.
-Post-upgrade upload allocated ID101 above orphan ID100 and survived restart;
-one legacy registry entry remained. Positional CLI replacement also reserved
-the orphan reference. Evidence: `/private/tmp/polka-validation/wp1-upgrade-6z3udpof`.
-This proves native data/config compatibility; Docker proof remains outstanding.
-
-WP2 HTTP regression failed on the old global-root 404, then passed after per-book
-resolution. Existing server/library suites pass. Review preserved export's
-skip-missing behavior, unset legacy-root progress saves, and original field
-formatting. No query positional scan or reader protocol changed.
-
-Historical execution notes follow; the work-package table records current status.
-
-Published: [foundation PR #1](https://github.com/ppoloskov/polka/pull/1), then
-[roots PR #2](https://github.com/ppoloskov/polka/pull/2) stacked on #1. Both exact
-commits passed full Go tests/vet/build and native old-binary upgrade checks.
-
-WP3 implements only internal staging/publication, not a new public import flow.
-Red tests exposed missing APIs; green snapshot tests cover two namespaces,
-idempotence, remove/reappear, source/admin deletion, duplicate poisoning, empty/
-cancelled input, and mid-insert rollback of rows/search/allocation floor. Review
-removed mutable-record comparison machinery and redundant relation helpers;
-one existing insert path is reused inside the publication transaction. Full
-store validation will use the committed tree without pending availability tests.
-
-Published [snapshot PR #3](https://github.com/ppoloskov/polka/pull/3), exact
-`2a678ef`: full Go tests/vet/server+desktop builds pass in an isolated archive.
-WP3b normal book queries/counts/recommendations/files exclude missing/disabled
-books; reader cache checks availability before returning cached chapters. Review
-caught and fixed filtering after search LIMIT/OFFSET; hidden matches cannot
-consume a visible result page. Admin restore cannot reindex missing books.
-Dictionary listings retain the original zero-book entry behavior, with visible
-book counts. Store/library/server suites pass; exact-tree checks are next.
-
-WP3b exact `1e7616b` passed full Go tests/vet/both builds from an isolated archive.
-WP4a strict parsing is additive: old Records stays permissive; the new snapshot
-path rejects structural/incomplete/duplicate records but retains old metadata
-fallbacks and valid trailing separators. Review removed unnecessary numeric
-validation and custom copy loops. Owned index copying uses stdlib io.Copy with
-source stat checks. `inpx:v1:` has a golden persisted-key guard. Added a source
-key lookup index on first publication to avoid quadratic scans; temporary 20k
-snapshot probe: initial 1.86s, repeat 3.77s, indexed query plan confirmed. This is
-a representative probe, not a measured 690k-library performance guarantee.
-
-Published [availability PR #4](https://github.com/ppoloskov/polka/pull/4).
-INPX staging exact `254d42f` passed full Go tests/vet/both builds from an archive.
-WP5 is independent of the legacy adapters and is being delivered first to keep
-the source changes separate. Folder hashing and metadata use one confined
-`os.Root` file descriptor; EPUB has a small ReaderAt parser wrapper. Tests cover
-recursion, source-byte preservation, symlink/unsupported skips, full hashes,
-metadata/fallback, changed/moved/identical copies, added dates and extension case.
-No public folder management is claimed until the API/UI packages land.
-
-Folder exact `4581178` passed full Go tests/vet/server and desktop builds from
-`/private/tmp/polka-validation/pr6`. Legacy adapters are reviewed: CLI replacement
-no longer deletes the database, web and CLI share atomic publication, uploaded
-indexes are retained by verified hash, provenance commits with the snapshot, and
-cover caches revalidate. Unknown legacy catalog rows become unavailable only on
-explicit successful replacement; hashed uploads remain. Failed replacement and
-source/provenance rollback tests pass. Exact commit and native upgrade checks
-remain required before publication. Management API work is separate.
-
-WP4b exact `e812276` passed full tests/vet/both builds and native unchanged-config
-upgrade, repeated restart, failed replace rollback and successful explicit
-replacement with retained unavailable references. Management API is reviewed
-and passed isolated focused suites/vet; commit/full validation next. Catalog
-filtering and admin UI are separate packages in progress.
-
-Delivery correction: the original INPX staging PR #5 was closed after a branch
-name was reused for legacy adapters. Replacement [PR #8](https://github.com/ppoloskov/polka/pull/8)
-is the exact validated staging commit on a dedicated branch; PR #6 already uses
-that branch. The full open stack was audited for intended head/base scopes.
-[Management PR #9](https://github.com/ppoloskov/polka/pull/9), exact `e8d15a9`, passed
-full Go tests/vet/server and desktop builds from archive pr9. New library controls
-use the existing admin screen; a separate management CLI is deferred to keep
-v1 narrow. Existing CLI imports are preserved and validated by WP4b.
+Frozen preview passed all Go tests/vet/both builds and 55 web tests/build.
+Native final upgrade: `/private/tmp/polka-validation/wp4b-native-vc4938zt`.
+Both-source HTTP acceptance: `/private/tmp/polka-validation/final-libraries-hophb25q`.
+Covered update/repeat/change/removal, corrupt/missing/empty source rollback,
+read-only source hashes, namespace/root isolation, personal retention, scoped
+paging/bulk export, enable/disable and durable restart. Live IAB review confirmed
+manual update counts, source selection, unavailable cards and own-root reading;
+management wording/status placement corrections followed; the updated web suite
+passes 57 tests/build. Exact committed-head
+checks and PR metadata audit remain the publication gate; Docker is unavailable.

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { t } from "../i18n";
 import BookCard from "./BookCard";
 
 const book = {
@@ -53,5 +54,19 @@ describe("BookCard", () => {
     renderCard({ ...book, BookID: 43, ReadingProgress: 0.001 });
     const fills = document.querySelectorAll(".book-card__progress-fill");
     expect(fills[fills.length - 1].style.width).toBe("2%");
+  });
+
+  it("shows source badges and an unavailable placeholder without cover or detail links", () => {
+    renderCard({ ...book, LibraryName: "North", Available: false });
+    expect(screen.getByText("North")).toBeInTheDocument();
+    expect(screen.getByText(t("library.unavailable"))).toBeInTheDocument();
+    expect(document.querySelector(".book-card__cover img")).toBeNull();
+    expect(document.querySelector('a[href="/book/42"]')).toBeNull();
+  });
+
+  it("keeps old cards without availability fields usable", () => {
+    renderCard(book);
+    expect(screen.getByText("Война и мир")).toHaveAttribute("href", "/book/42");
+    expect(document.querySelector(".book-card__cover img")).not.toBeNull();
   });
 });

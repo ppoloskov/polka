@@ -2,6 +2,8 @@ package server
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -71,5 +73,38 @@ func TestUploadDuplicates(t *testing.T) {
 	ok := upload("anna.fb2", []byte(other), false)
 	if ok.BookID == 0 || ok.Error != "" || ok.NeedConfirm {
 		t.Errorf("different book: %+v", ok)
+	}
+}
+
+func TestUploadDuplicatesStayWithinLegacyLibrary(t *testing.T) {
+	f := newFullServer(t, "required")
+	root := filepath.Join(t.TempDir(), "named")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "named-copy.fb2"), []byte(readerFB2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	libraryID := createFolderLibrary(t, f, "Named copies", root)
+	startLibraryUpdate(t, f, libraryID)
+	waitLibraryUpdate(t, f, libraryID)
+
+	upload := func(name string) uploadResult {
+		t.Helper()
+		resp := uploadFiles(t, f.admin, f.ts.URL+"/admin/books/upload", map[string][]byte{name: []byte(readerFB2)}, nil)
+		defer resp.Body.Close()
+		var result map[string][]uploadResult
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatal(err)
+		}
+		return result["results"][0]
+	}
+	first := upload("legacy-copy.fb2")
+	if first.BookID == 0 || first.Error != "" {
+		t.Fatalf("named-library copy prevented default legacy upload: %+v", first)
+	}
+	second := upload("legacy-copy-again.fb2")
+	if second.Duplicate == nil || second.Duplicate.BookID != first.BookID || second.Duplicate.Reason != "file" {
+		t.Fatalf("legacy duplicate = %+v; want original uploaded legacy book %d", second, first.BookID)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -156,6 +157,9 @@ func saveInpxSource(path, dataDir, expectedHash string) (string, error) {
 		if verifyErr := verifyExisting(); verifyErr != nil {
 			return "", verifyErr
 		}
+	}
+	if runtime.GOOS == "windows" {
+		return destination, nil
 	}
 	d, err := os.Open(dir)
 	if err != nil {

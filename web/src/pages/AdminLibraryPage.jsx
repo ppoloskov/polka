@@ -277,6 +277,7 @@ const AdminLibraryPage = () => {
   };
 
   const importRunning = Boolean(status?.running || libraryUpdateStarting);
+  const legacyImportStatus = !status?.libraryId || status.libraryId === "legacy";
 
   // --- Sources for external ratings and similar books ---
   const [enrichment, setEnrichment] = useState(null);
@@ -658,7 +659,7 @@ const AdminLibraryPage = () => {
           <p className="library-admin__hint">{t("admin.import.pathHint")}</p>
         </div>
 
-        {status && (status.running || status.phase === "done" || status.phase === "error") && (
+        {status && legacyImportStatus && (status.running || status.phase === "done" || status.phase === "error") && (
           <div className={`library-admin__status library-admin__status--${status.phase}`}>
             {status.running && (
               <>
@@ -682,7 +683,7 @@ const AdminLibraryPage = () => {
           </div>
         )}
 
-        {status && !status.running && status.warning && (
+        {status && legacyImportStatus && !status.running && status.warning && (
           <div className="library-admin__status library-admin__status--warning">
             ⚠ {status.warning}
           </div>

@@ -65,3 +65,8 @@ Upgrade proof must include the public server workflows and separate users DB,
 not only schema fixtures. Docker is absent locally: native restart acceptance
 can validate data/config behavior but actual image acceptance remains explicit.
 Every accepted batch records red/green tests, review, and remaining limits.
+
+Separate Polka reading state is keyed by public book ID and is tested with
+byte-identical FB2 copies. KOReader uses a document digest without library
+identity; its existing one-digest bridge can be ambiguous for identical copies.
+No reader protocol or digest mapping redesign is included in this series.

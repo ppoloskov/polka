@@ -87,6 +87,32 @@ func titles(books []Book) []string {
 	return out
 }
 
+func TestFindSimilarScopesBeforeCandidateLimit(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "polka.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	named, err := st.AddLibrary(ctx, Library{Name: "Named", Kind: "folder", Root: filepath.Join(t.TempDir(), "named")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 55; i++ {
+		if _, err := st.AddBook(ctx, &BookInput{LibraryID: named.ID, Title: "Scoped duplicate", Authors: []AuthorName{{Last: "Writer"}}, Folder: ".", File: fmt.Sprint(i), Ext: "fb2"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	legacyID, err := st.AddBook(ctx, &BookInput{Title: "Scoped duplicate", Authors: []AuthorName{{Last: "Writer"}}, Folder: "uploads", File: "legacy", Ext: "fb2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	similar, err := st.FindSimilar(ctx, "Scoped duplicate", []string{"Writer"}, "legacy")
+	if err != nil || len(similar) != 1 || similar[0].ID != legacyID {
+		t.Fatalf("legacy-scoped similar candidates = %v, %v; want legacy book %d after 55 named matches", titles(similar), err, legacyID)
+	}
+}
+
 func TestMigrateFromV1(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "old.db")
 	db, err := sqlitedrv.Open(path, sqlitedrv.Options{WAL: true})

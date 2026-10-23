@@ -124,7 +124,7 @@ func (s *Server) saveUploadedBook(ctx context.Context, uploadDir string, fh *mul
 	discard := func() { os.Remove(dst.Name()) }
 
 	// Level 1: exact copy of the file.
-	if dup, err := s.st.FindByHash(ctx, "file_hash", fileHash); err == nil {
+	if dup, err := s.st.FindByHash(ctx, "file_hash", fileHash, "legacy"); err == nil {
 		discard()
 		res.Error = tr(lang, "upload.dup.file")
 		res.Duplicate = &duplicateInfo{BookID: dup.ID, Title: dup.Title, Authors: dup.AuthorNames, Reason: "file"}
@@ -138,7 +138,7 @@ func (s *Server) saveUploadedBook(ctx context.Context, uploadDir string, fh *mul
 			contentHash, _ = library.ContentHash(f)
 			f.Close()
 		}
-		if dup, err := s.st.FindByHash(ctx, "content_hash", contentHash); err == nil {
+		if dup, err := s.st.FindByHash(ctx, "content_hash", contentHash, "legacy"); err == nil {
 			discard()
 			res.Error = tr(lang, "upload.dup.text")
 			res.Duplicate = &duplicateInfo{BookID: dup.ID, Title: dup.Title, Authors: dup.AuthorNames, Reason: "content"}
@@ -146,7 +146,10 @@ func (s *Server) saveUploadedBook(ctx context.Context, uploadDir string, fh *mul
 		}
 	}
 
-	input := s.extractUploadMeta(dst.Name(), base, ext)
+	input, err := importer.BookFromFile(dst.Name(), base, ext)
+	if err != nil {
+		s.log.Warn("upload metadata", "file", base, "error", err)
+	}
 	input.Folder = uploadsFolder
 	input.File = base
 	input.Ext = ext
@@ -161,7 +164,7 @@ func (s *Server) saveUploadedBook(ctx context.Context, uploadDir string, fh *mul
 		for _, a := range input.Authors {
 			lastNames = append(lastNames, a.Last)
 		}
-		if similar, err := s.st.FindSimilar(ctx, input.Title, lastNames); err == nil && len(similar) > 0 {
+		if similar, err := s.st.FindSimilar(ctx, input.Title, lastNames, "legacy"); err == nil && len(similar) > 0 {
 			discard()
 			res.NeedConfirm = true
 			res.Title = input.Title
@@ -190,57 +193,6 @@ func (s *Server) saveUploadedBook(ctx context.Context, uploadDir string, fh *mul
 	res.Authors = strings.Join(names, ", ")
 	s.log.Info("book uploaded", "id", bookID, "title", input.Title, "file", base+"."+ext)
 	return res
-}
-
-// extractUploadMeta extracts metadata from the file; on failure
-// the title is taken from the file name.
-func (s *Server) extractUploadMeta(path, base, ext string) *store.BookInput {
-	input := &store.BookInput{Title: base}
-
-	switch ext {
-	case "fb2":
-		f, err := os.Open(path)
-		if err != nil {
-			return input
-		}
-		defer f.Close()
-		meta, err := library.ParseFB2(f, false)
-		if err != nil {
-			s.log.Warn("upload fb2 meta", "file", base, "error", err)
-			return input
-		}
-		if meta.Title != "" {
-			input.Title = meta.Title
-		}
-		for _, a := range meta.Authors {
-			input.Authors = append(input.Authors, store.AuthorName{Last: a.Last, First: a.First, Middle: a.Middle})
-		}
-		input.Series = meta.Series
-		input.SeriesNum = meta.SeriesNum
-		for _, sequence := range meta.Sequences {
-			input.SeriesList = append(input.SeriesList, store.SeriesRef{Title: sequence.Name, SeqNumber: sequence.Number})
-		}
-		input.Genres = meta.Genres
-		input.Lang = meta.Lang
-		input.ISBN = meta.ISBN
-
-	case "epub":
-		meta, err := library.ParseEPUBFile(path)
-		if err != nil {
-			s.log.Warn("upload epub meta", "file", base, "error", err)
-			return input
-		}
-		if meta.Title != "" {
-			input.Title = meta.Title
-		}
-		for _, name := range meta.Authors {
-			input.Authors = append(input.Authors, store.AuthorName{Last: name})
-		}
-		input.Lang = meta.Language
-		input.Keywords = meta.Subjects
-		input.Genres = library.GenresFromSubjects(meta.Subjects)
-	}
-	return input
 }
 
 func sanitizeFileName(name string) string {
