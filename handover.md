@@ -207,6 +207,21 @@ for Linux/amd64, built from `codex/image-libraries-browsing` commit `a374461`
 binary emission + the rewritten PR #16 HTTP-cache-only cover behavior).
 Registry digest matched the build metadata. Evidence:
 `/private/tmp/polka-validation/review-image/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+Superseded by the ordered-merge image below: review follow-up found that the
+server and CLI replay converted the ordered pending pairs into a map, letting
+Go's map iteration reverse a consolidation chain (a winner retired as a later
+publication's loser) and strand state on the intermediate winner while
+acknowledging the pairs. Delivered in PR #21 (`d462cd0`): `auth.MergeBookRefs`
+now takes the ordered pair slice (`auth.BookRefPair`) and applies pairs in
+publication order, with a 20-round chained replay regression test.
+
+Ordered-merge image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-e83c6a1`
+resolves to `sha256:4284c466462222c1d1e916f80a9d694b1ffde80b021c27fbf917395206349854`
+for Linux/amd64, built from `codex/image-libraries-browsing` commit `e83c6a1`
+(all review follow-ups above + ordered merge replay). Registry digest matched
+the build metadata. Evidence:
+`/private/tmp/polka-validation/ordered-merge-image/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
 The digest-pinned live deployment was unchanged by publishing.
 
 Sidecar-format image publication (no merge or deployment):
