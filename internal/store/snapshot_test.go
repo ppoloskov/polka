@@ -655,6 +655,81 @@ func TestPublishLibraryConsolidationRewriteOnChangedMember(t *testing.T) {
 	}
 }
 
+// A publish that invalidates more search rows than ftsRebuildThreshold
+// rebuilds the index wholesale instead of deleting per row: rekeyed winners
+// index their new content, swept rows disappear, added books appear, and
+// live rows of every other library survive the delete-all.
+func TestPublishLibraryWholesaleSearchRebuild(t *testing.T) {
+	defer func() { ftsRebuildThreshold = 10000 }()
+	ftsRebuildThreshold = 2 // force the wholesale path for this small publish
+	st, ctx := snapshotStore(t)
+	libraryID := snapshotLibrary(t, st, ctx, "wholesale")
+	otherID := snapshotLibrary(t, st, ctx, "other")
+
+	winner := snapshotEntry("inpx:v1:w1", "Winner old")
+	winner.book.File = "pair"
+	loser := snapshotEntry("inpx:v1:l1", "Loser old")
+	loser.book.File = "pair"
+	goner := snapshotEntry("inpx:v1:gone", "Goner")
+	if err := publishTestSnapshot(t, st, ctx, libraryID, winner, loser, goner); err != nil {
+		t.Fatal(err)
+	}
+	by := snapshotEntry("folder:bystander", "Bystander")
+	if err := publishTestSnapshot(t, st, ctx, otherID, by); err != nil {
+		t.Fatal(err)
+	}
+	gonerID := snapshotBookID(t, st, libraryID, "inpx:v1:gone")
+	byID := snapshotBookID(t, st, otherID, "folder:bystander")
+
+	// Rekey the pair (changed member → full rewrite), sweep the goner, add a
+	// fresh book: three dirty rows, over the forced threshold.
+	group := snapshotEntry("inpx:v2:pair", "Winner new")
+	group.book.File = "pair"
+	snap, err := NewSnapshot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = snap.Close() })
+	if err := snap.add(ctx, "inpx:v2:pair", group.book, `["ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"]`); err != nil {
+		t.Fatal(err)
+	}
+	if err := snap.Add(ctx, "inpx:v2:fresh", snapshotEntry("inpx:v2:fresh", "Fresh book").book); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := st.PublishLibrary(ctx, libraryID, snap, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Changed != 1 || stats.Removed != 2 || stats.Added != 1 {
+		t.Fatalf("wholesale stats = %+v, want 1 changed, 2 removed, 1 added", stats)
+	}
+
+	// The winner is whichever pair row got rebound to the group key; the
+	// loser is the one swept into ConsolidatedIDs.
+	winnerID := snapshotBookID(t, st, libraryID, "inpx:v2:pair")
+	var title string
+	if err := st.DB().QueryRow(`SELECT title FROM book_search WHERE rowid=?`, winnerID).Scan(&title); err != nil {
+		t.Fatalf("rekeyed winner lost its search row: %v", err)
+	}
+	if title != "Winner new" {
+		t.Fatalf("rekeyed winner search title = %q, want the staged content", title)
+	}
+	for loserID := range stats.ConsolidatedIDs {
+		if snapshotSearchIndexed(t, st, loserID) {
+			t.Fatalf("swept book %d is still search indexed", loserID)
+		}
+	}
+	if snapshotSearchIndexed(t, st, gonerID) {
+		t.Fatal("swept goner is still search indexed")
+	}
+	if !snapshotSearchIndexed(t, st, byID) {
+		t.Fatal("wholesale rebuild dropped another library's search row")
+	}
+	if !snapshotSearchIndexed(t, st, snapshotBookID(t, st, libraryID, "inpx:v2:fresh")) {
+		t.Fatal("added book is not search indexed after the wholesale rebuild")
+	}
+}
+
 func TestPublishLibraryRejectsExhaustedBookIDRange(t *testing.T) {
 	st, ctx := snapshotStore(t)
 	libraryID := snapshotLibrary(t, st, ctx, "exhausted-ids")

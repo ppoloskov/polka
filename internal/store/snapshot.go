@@ -356,6 +356,14 @@ func (s *Snapshot) Close() error {
 const inpxV1KeyPrefix = "inpx:v1:"
 const inpxV2KeyPrefix = "inpx:v2:"
 
+// ftsRebuildThreshold switches search-index maintenance from targeted deletes
+// to a wholesale rebuild once a publish invalidates more rows than this.
+// Interleaved per-row FTS5 deletes cost milliseconds each at catalog scale
+// (segment merges grow with the index); delete-all plus a bulk reindex of a
+// large library finishes in minutes regardless of the invalidation count.
+// Variable (not const) so tests can lower it.
+var ftsRebuildThreshold int64 = 10000
+
 // PublishLibrary atomically applies a complete source snapshot to one library.
 // Source keys are immutable identities; matching rows keep their catalog data.
 func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *Snapshot, allowEmpty bool) (stats UpdateStats, resultErr error) {
@@ -382,6 +390,13 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 		return stats, err
 	}
 	defer tx.Rollback()
+	// Search-index rows this publish must delete are collected here and
+	// handled after the loop: per-row FTS5 deletes interleaved with writes
+	// are the dominant publish cost at scale, so they are either executed as
+	// one set-based delete or replaced by a wholesale rebuild (see below).
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE polka_fts_dirty (id INTEGER PRIMARY KEY) WITHOUT ROWID`); err != nil {
+		return stats, err
+	}
 	var exists int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM libraries WHERE id=?`, libraryID).Scan(&exists); err != nil {
 		return stats, err
@@ -463,6 +478,11 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 					if _, err := tx.ExecContext(ctx, `UPDATE books SET source_key=?, missing=? WHERE id=?`, key, boolToInt(book.Deleted), group[0].ID); err != nil {
 						return stats, err
 					}
+					if book.Deleted {
+						if _, err := tx.ExecContext(ctx, `INSERT INTO polka_fts_dirty (id) VALUES (?)`, group[0].ID); err != nil {
+							return stats, err
+						}
+					}
 				} else {
 					if writer == nil {
 						writer, maxAuthorID, maxSeriesID, err = newImportSessionForTx(s, ctx, tx)
@@ -473,11 +493,16 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 					if err := rekeyInpxGroup(ctx, tx, writer, key, &book, group[0].ID); err != nil {
 						return stats, err
 					}
+					if _, err := tx.ExecContext(ctx, `INSERT INTO polka_fts_dirty (id) VALUES (?)`, group[0].ID); err != nil {
+						return stats, err
+					}
 				}
 				rekeyed++
 				// The rebound row now carries its v2 key; keep the temp probe
 				// consistent so a same-(folder, file) probe cannot rebind it.
-				if _, err := tx.ExecContext(ctx, `DELETE FROM polka_v1_files WHERE id=?`, group[0].ID); err != nil {
+				// The predicate must cover the probe index prefix: an id-only
+				// delete would full-scan the probe table once per group.
+				if _, err := tx.ExecContext(ctx, `DELETE FROM polka_v1_files WHERE folder=? AND file=? AND ext=? AND id=?`, book.Folder, book.File, book.Ext, group[0].ID); err != nil {
 					return stats, err
 				}
 				for _, loser := range group[1:] {
@@ -522,7 +547,7 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 			return stats, err
 		}
 		if book.Deleted {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM book_search WHERE rowid=?`, id); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO polka_fts_dirty (id) VALUES (?)`, id); err != nil {
 				return stats, err
 			}
 		} else if wasMissing {
@@ -547,13 +572,19 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM books WHERE library_id=? AND source_key!='' AND missing=2`, libraryID).Scan(&stats.Removed); err != nil {
 		return stats, err
 	}
+	// Swept rows lose their search rows too; record the exact newly-swept set
+	// before missing=2 flips to missing=1, instead of probing every row ever
+	// swept by any publish.
+	if _, err := tx.ExecContext(ctx, `INSERT INTO polka_fts_dirty SELECT id FROM books WHERE library_id=? AND source_key!='' AND missing=2`, libraryID); err != nil {
+		return stats, err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE books SET missing=1 WHERE library_id=? AND missing=2`, libraryID); err != nil {
 		return stats, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM book_search WHERE rowid IN (SELECT id FROM books WHERE library_id=? AND source_key!='' AND missing=1)`, libraryID); err != nil {
-		return stats, err
-	}
 	if libraryID == "legacy" && snapshot.markLegacyUnkeyedMissing {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO polka_fts_dirty SELECT id FROM books WHERE library_id='legacy' AND source_key='' AND file_hash='' AND missing=0`); err != nil {
+			return stats, err
+		}
 		res, err := tx.ExecContext(ctx, `UPDATE books SET missing=1 WHERE library_id='legacy' AND source_key='' AND file_hash='' AND missing=0`)
 		if err != nil {
 			return stats, err
@@ -563,23 +594,60 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 			return stats, err
 		}
 		stats.Removed += int(removed)
-		if _, err := tx.ExecContext(ctx, `DELETE FROM book_search WHERE rowid IN (SELECT id FROM books WHERE library_id='legacy' AND source_key='' AND file_hash='' AND missing=1)`); err != nil {
-			return stats, err
-		}
 	}
-	if rekeyed > 0 {
-		// Rekeyed winners had their search rows dropped one by one; rebuild
-		// them in a single pass over the live rows that lack one.
+	var dirty int64
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM polka_fts_dirty`).Scan(&dirty); err != nil {
+		return stats, err
+	}
+	if dirty > ftsRebuildThreshold {
+		// Mass change: per-row FTS5 deletes cost more than reindexing every
+		// live row. book_search is content-owning, so 'delete-all' is not
+		// available; drop and recreate it instead (transactional DDL, same
+		// definition as schema.go). This wipes the index across libraries, so
+		// the rebuild below must stay library-agnostic.
+		if _, err := tx.ExecContext(ctx, `DROP TABLE book_search`); err != nil {
+			return stats, fmt.Errorf("drop search index: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `CREATE VIRTUAL TABLE book_search USING fts5(
+			title,
+			authors,
+			series,
+			tokenize = 'unicode61 remove_diacritics 2'
+		)`); err != nil {
+			return stats, fmt.Errorf("recreate search index: %w", err)
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO book_search (rowid,title,authors,series)
 			SELECT b.id,b.title,
 			       coalesce((SELECT group_concat(trim(a.last_name || ' ' || a.first_name || ' ' || a.middle_name), ' ')
 			                 FROM book_authors ba JOIN authors a ON a.id=ba.author_id WHERE ba.book_id=b.id),''),
 			       coalesce((SELECT group_concat(s.title, ' ') FROM book_series bs JOIN series s ON s.id=bs.series_id WHERE bs.book_id=b.id),'')
-			FROM books b WHERE b.library_id=? AND b.deleted=0 AND b.missing=0
-			  AND NOT EXISTS (SELECT 1 FROM book_search WHERE book_search.rowid=b.id)`, libraryID); err != nil {
-			return stats, fmt.Errorf("rebuild rekeyed search rows: %w", err)
+			FROM books b WHERE b.deleted=0 AND b.missing=0`); err != nil {
+			return stats, fmt.Errorf("rebuild search index: %w", err)
 		}
+	} else {
+		if dirty > 0 {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM book_search WHERE rowid IN (SELECT id FROM polka_fts_dirty)`); err != nil {
+				return stats, err
+			}
+		}
+		if rekeyed > 0 {
+			// Rekeyed winners lost their search rows above; rebuild them in a
+			// single pass over the live rows that lack one.
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO book_search (rowid,title,authors,series)
+				SELECT b.id,b.title,
+				       coalesce((SELECT group_concat(trim(a.last_name || ' ' || a.first_name || ' ' || a.middle_name), ' ')
+				                 FROM book_authors ba JOIN authors a ON a.id=ba.author_id WHERE ba.book_id=b.id),''),
+				       coalesce((SELECT group_concat(s.title, ' ') FROM book_series bs JOIN series s ON s.id=bs.series_id WHERE bs.book_id=b.id),'')
+				FROM books b WHERE b.library_id=? AND b.deleted=0 AND b.missing=0
+				  AND NOT EXISTS (SELECT 1 FROM book_search WHERE book_search.rowid=b.id)`, libraryID); err != nil {
+				return stats, fmt.Errorf("rebuild rekeyed search rows: %w", err)
+			}
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE polka_fts_dirty`); err != nil {
+		return stats, err
 	}
 	// A consolidation-only publish allocates no book IDs but can still create
 	// series/authors through the rekey path; index those too.
@@ -601,7 +669,8 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 			       coalesce((SELECT group_concat(trim(a.last_name || ' ' || a.first_name || ' ' || a.middle_name), ' ')
 			                 FROM book_authors ba JOIN authors a ON a.id=ba.author_id WHERE ba.book_id=b.id),''),
 			       coalesce((SELECT group_concat(s.title, ' ') FROM book_series bs JOIN series s ON s.id=bs.series_id WHERE bs.book_id=b.id),'')
-			FROM books b WHERE b.id>? AND b.id<=? AND b.library_id=? AND b.deleted=0 AND b.missing=0`, initialHighWater, highWater, libraryID); err != nil {
+			FROM books b WHERE b.id>? AND b.id<=? AND b.library_id=? AND b.deleted=0 AND b.missing=0
+			  AND NOT EXISTS (SELECT 1 FROM book_search WHERE book_search.rowid=b.id)`, initialHighWater, highWater, libraryID); err != nil {
 			return stats, fmt.Errorf("index new books: %w", err)
 		}
 	}
@@ -747,9 +816,9 @@ func rekeyInpxGroup(ctx context.Context, tx *sql.Tx, writer *ImportSession, key 
 	if err := writer.addBookRelations(winner, book, series); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM book_search WHERE rowid=?`, winner); err != nil {
-		return err
-	}
+	// The winner's stale search row is deleted after the publish loop (the
+	// caller records it in polka_fts_dirty): per-row FTS5 deletes interleaved
+	// with relation writes are the dominant publish cost at scale.
 	if book.Deleted {
 		if _, err := tx.ExecContext(ctx, `UPDATE books SET missing=1 WHERE id=?`, winner); err != nil {
 			return err
