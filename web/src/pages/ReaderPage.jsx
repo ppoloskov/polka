@@ -45,6 +45,7 @@ const ReaderPage = () => {
   const [loaded, setLoaded] = useState([]); // loaded chapters, in order
   const [current, setCurrent] = useState({ index: 0, ratio: 0 }); // the chapter in view
   const [error, setError] = useState(null);
+  const [saveFailed, setSaveFailed] = useState(false);
   const [tocOpen, setTocOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [note, setNote] = useState(null);
@@ -111,6 +112,7 @@ const ReaderPage = () => {
               const saved = await saveFB2Progress(bookId, position, revision.current, fileDigest);
               if (fileDigest === digest.current && generation === saveGeneration.current)
                 revision.current = saved.revision;
+              setSaveFailed(false);
             } catch (err) {
               if (err.status === 412) {
                 syncBlocked.current = true;
@@ -123,10 +125,16 @@ const ReaderPage = () => {
                 if (fileDigest !== digest.current) return;
                 setRemoteProgress(remote ?? { revision: revision.current });
               }
+              // Unhandled server/network failures must be visible: the
+              // reader keeps working, but the user learns the position was
+              // not saved instead of leaving silently.
+              setSaveFailed(true);
             }
           });
         } else {
-          saveProgress(bookId, index, ratio, overall);
+          Promise.resolve(saveProgress(bookId, index, ratio, overall))
+            .then(() => setSaveFailed(false))
+            .catch(() => setSaveFailed(true));
         }
       } else {
         localProgress.set(bookId, index, ratio);
@@ -574,6 +582,11 @@ const ReaderPage = () => {
       )}
 
       <main className="reader__page" ref={pageRef} onClick={onPageTap}>
+        {saveFailed && (
+          <aside role="alert" className="reader__sync-notice reader__save-notice">
+            <p>{t("reader.saveFailed")}</p>
+          </aside>
+        )}
         {firstLoaded > 0 && (
           <button type="button" className="reader__prev-link" onClick={() => goTo(firstLoaded - 1)}>
             ↑ {chapterLabel(meta, firstLoaded - 1)}

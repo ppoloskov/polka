@@ -4,12 +4,20 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 )
 
 const bookIDHighWaterKey = "book_id_high_water"
+
+// Maintained counters (see MaintainCounts): exact values recorded with the
+// catalog so reads are constant-time on large libraries.
+const (
+	metaKeysVisibleCount = "visible_book_count"
+	metaKeysGenreCounts  = "genre_book_counts"
+)
 
 type Library struct {
 	ID         string `json:"id"`
@@ -87,7 +95,10 @@ func (s *Store) AddLibrary(ctx context.Context, l Library) (*Library, error) {
 }
 
 // UpdateLibrary changes a library's display name and/or availability. Source
-// paths and kind are fixed when a library is created.
+// paths and kind are fixed when a library is created. An availability flip
+// adjusts the maintained totals in the same transaction: the delta is the
+// library's own live (deleted=0, missing=0) book count and per-genre
+// counts, bounded by that library's share rather than a whole-catalog scan.
 func (s *Store) UpdateLibrary(ctx context.Context, id string, name *string, enabled *bool) error {
 	if name == nil && enabled == nil {
 		return fmt.Errorf("library update is empty")
@@ -104,7 +115,20 @@ func (s *Store) UpdateLibrary(ctx context.Context, id string, name *string, enab
 	if enabled != nil {
 		enabledValue = boolToInt(*enabled)
 	}
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var wasEnabled int
+	if err := tx.QueryRowContext(ctx, `SELECT coalesce(enabled, 0) FROM libraries WHERE id = ?`, id).Scan(&wasEnabled); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `
 		UPDATE libraries
 		SET name=COALESCE(?, name), enabled=COALESCE(?, enabled)
 		WHERE id=?`, nameValue, enabledValue, id)
@@ -118,7 +142,36 @@ func (s *Store) UpdateLibrary(ctx context.Context, id string, name *string, enab
 	if changed == 0 {
 		return ErrNotFound
 	}
-	s.invalidateBookCount()
+	// Availability flip: adjust the maintainable totals atomically.
+	if enabled != nil && wasEnabled != boolToInt(*enabled) {
+		dir := 1
+		if !*enabled {
+			dir = -1
+		}
+		n, err := libraryBookCountTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		deltas := map[string]int{}
+		if err := libraryGenreDeltaTx(ctx, tx, id, dir, deltas); err != nil {
+			return err
+		}
+		if _, err := s.bumpCountsTx(ctx, tx, dir*n, deltas, ""); err != nil {
+			return err
+		}
+	} else if !s.metaHoldsCountsTx(ctx, tx) {
+		// Counts were never maintained (upgraded database): fill them once.
+		if _, err := s.bumpCountsTx(ctx, tx, 0, nil, ""); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// A flip changes which library's books a genre member list covers.
+	if enabled != nil {
+		s.dropGenreVisibleIDs()
+	}
 	return nil
 }
 

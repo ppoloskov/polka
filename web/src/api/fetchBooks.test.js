@@ -19,11 +19,12 @@ describe("catalog API library scope", () => {
     fetchShelfBooks({ shelfId: "newest", offset: 20, libraryId: "north" });
     fetchSimilarBooks({ bookId: 4, title: "Dune", author: "Herbert", libraryId: "north" });
     fetchHomeShelves();
-
-    expect(api.getJson).toHaveBeenNthCalledWith(1, "main/getBooks/getHomeShelves?libraryId=north");
-    expect(api.getJson).toHaveBeenNthCalledWith(2, "main/getBooks/getSearchTitles?search=Dune&selectedGroupID=4&libraryId=north");
-    expect(api.getJson).toHaveBeenNthCalledWith(3, "main/getBooks/getShelfBooks?shelfId=newest&offset=20&libraryId=north");
-    expect(api.getJson).toHaveBeenNthCalledWith(4, "main/getBooks/getSimilarBooks?bookId=4&title=Dune&author=Herbert&libraryId=north");
-    expect(api.getJson).toHaveBeenNthCalledWith(5, "main/getBooks/getHomeShelves");
+    // The second argument carries request options such as AbortSignals; a
+    // plain call sends an empty options object.
+    expect(api.getJson).toHaveBeenNthCalledWith(1, "main/getBooks/getHomeShelves?libraryId=north", {});
+    expect(api.getJson).toHaveBeenNthCalledWith(2, "main/getBooks/getSearchTitles?search=Dune&selectedGroupID=4&libraryId=north", {});
+    expect(api.getJson).toHaveBeenNthCalledWith(3, "main/getBooks/getShelfBooks?shelfId=newest&offset=20&libraryId=north", {});
+    expect(api.getJson).toHaveBeenNthCalledWith(4, "main/getBooks/getSimilarBooks?bookId=4&title=Dune&author=Herbert&libraryId=north", {});
+    expect(api.getJson).toHaveBeenNthCalledWith(5, "main/getBooks/getHomeShelves", {});
   });
 });

@@ -34,8 +34,12 @@ func lookupOrInsert(ctx context.Context, tx *sql.Tx, selectQ, insertQ string, af
 	return id, nil
 }
 
-// AddBook adds a single book (web upload) with all its relations
-// and updates the search indexes.
+// AddBook adds a single book (web upload) with all its relations and
+// updates the search indexes. The maintained totals ride the same
+// transaction: a failed count adjustment rolls the book back with the
+// upload, so the success/failure contract of the response is preserved
+// (the upload cleanup deletes the file on error; a committed row pointing
+// at a deleted file would be the worst case).
 func (s *Store) AddBook(ctx context.Context, b *BookInput) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -46,11 +50,45 @@ func (s *Store) AddBook(ctx context.Context, b *BookInput) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	// The effective library after addBookTx normalization (a missing
+	// LibraryID defaults to the legacy library).
+	var effectiveLibrary string
+	if err := tx.QueryRowContext(ctx, `SELECT library_id FROM books WHERE id = ?`, id).Scan(&effectiveLibrary); err != nil {
+		return 0, err
+	}
+	// Genre totals count visible memberships only: an upload into a
+	// disabled library contributes nothing, and duplicate codes in the
+	// input map to one stored membership (addBookTx insert-or-ignores the
+	// relation), so the delta must count it once.
+	visibleDelta := 0
+	var genreDeltas map[string]int
+	if enabled, err := libraryEnabledTx(ctx, tx, effectiveLibrary); err != nil {
+		return 0, err
+	} else if enabled {
+		visibleDelta = 1
+		genreDeltas = map[string]int{}
+		for _, code := range b.Genres {
+			genreDeltas[code] = 1
+		}
+	}
+	if _, err := s.bumpCountsTx(ctx, tx, visibleDelta, genreDeltas, effectiveLibrary); err != nil {
+		return 0, err
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
-	s.invalidateBookCount()
+	// The new book joins the cached genre member lists.
+	s.dropGenreVisibleIDs()
 	return id, nil
+}
+
+func libraryEnabledTx(ctx context.Context, tx *sql.Tx, libraryID string) (bool, error) {
+	var enabled int
+	err := tx.QueryRowContext(ctx, `SELECT enabled FROM libraries WHERE id = ?`, libraryID).Scan(&enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil && enabled == 1, err
 }
 
 func addBookTx(ctx context.Context, tx *sql.Tx, b *BookInput) (int64, error) {
@@ -154,50 +192,129 @@ func addBookTx(ctx context.Context, tx *sql.Tx, b *BookInput) (int64, error) {
 	return bookID, nil
 }
 
-// SetBookDeleted hides or restores a book, keeping the FTS index in sync.
+// SetBookDeleted hides or restores a book, keeping the FTS index in sync
+// and the maintained totals in the same transaction, so a failed count
+// adjustment fails the whole mutation instead of leaving durable counts
+// behind.
 func (s *Store) SetBookDeleted(ctx context.Context, bookID int64, deleted bool) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE books SET deleted = ? WHERE id = ?`, boolToInt(deleted), bookID)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	defer tx.Rollback()
+
+	var wasDeleted, missing, libraryExists int
+	var libraryID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT b.deleted, b.missing,
+		       coalesce((SELECT 1 FROM libraries l WHERE l.id = b.library_id), 0), b.library_id
+		FROM books b WHERE b.id = ?`, bookID).Scan(&wasDeleted, &missing, &libraryExists, &libraryID)
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
-	s.invalidateBookCount()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE books SET deleted = ? WHERE id = ?`, boolToInt(deleted), bookID); err != nil {
+		return err
+	}
+
+	// The visibility delta only applies when the library is enabled and the
+	// book is not swept to missing.
+	enabled := false
+	if libraryExists == 1 {
+		if enabled, err = libraryEnabledTx(ctx, tx, libraryID); err != nil {
+			return err
+		}
+	}
+	wasVisible := wasDeleted == 0 && missing == 0 && enabled
+	isVisible := !deleted && missing == 0 && enabled
+	if wasVisible != isVisible {
+		visibleDelta := -1
+		if isVisible {
+			visibleDelta = 1
+		}
+		var genreDeltas map[string]int
+		if codes, err := bookGenreDeltaCodes(ctx, tx, bookID); err != nil {
+			return err
+		} else {
+			for _, code := range codes {
+				if genreDeltas == nil {
+					genreDeltas = map[string]int{}
+				}
+				genreDeltas[code] += visibleDelta
+			}
+		}
+		if _, err := s.bumpCountsTx(ctx, tx, visibleDelta, genreDeltas, libraryID); err != nil {
+			return err
+		}
+	} else if !s.metaHoldsCountsTx(ctx, tx) {
+		// Counts were never maintained (upgraded database): fill them once.
+		if _, err := s.bumpCountsTx(ctx, tx, 0, nil, libraryID); err != nil {
+			return err
+		}
+	}
 
 	// Deleted books are kept out of the FTS index (so search counts stay
 	// honest); drop any stale row first so a restore never hits a
 	// duplicate rowid.
-	if _, err = s.db.ExecContext(ctx, `DELETE FROM book_search WHERE rowid = ?`, bookID); err != nil || deleted {
+	if _, err = tx.ExecContext(ctx, `DELETE FROM book_search WHERE rowid = ?`, bookID); err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO book_search (rowid, title, authors, series)
-		SELECT b.id, b.title,
-		       coalesce((SELECT group_concat(trim(a.last_name || ' ' || a.first_name), ' ')
-		                 FROM book_authors ba JOIN authors a ON a.id = ba.author_id
-		                 WHERE ba.book_id = b.id), ''),
-		       coalesce((SELECT group_concat(s.title, ' ') FROM book_series bs JOIN series s ON s.id = bs.series_id
+	if !deleted {
+		if _, err = tx.ExecContext(ctx, `
+			INSERT INTO book_search (rowid, title, authors, series)
+			SELECT b.id, b.title,
+			       coalesce((SELECT group_concat(trim(a.last_name || ' ' || a.first_name), ', ')
+			                 FROM book_authors ba JOIN authors a ON a.id = ba.author_id
+			                 WHERE ba.book_id = b.id), ''),
+			       coalesce((SELECT group_concat(s.title, ' ') FROM book_series bs JOIN series s ON s.id = bs.series_id
                           WHERE bs.book_id = b.id), '')
-		FROM books b JOIN libraries l ON l.id = b.library_id
-		WHERE b.id = ? AND b.missing = 0 AND l.enabled = 1`, bookID)
-	return err
+			FROM books b JOIN libraries l ON l.id = b.library_id
+			WHERE b.id = ? AND b.missing = 0 AND l.enabled = 1`, bookID); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Visibility changed: the cached genre member lists are stale.
+	if wasVisible != isVisible {
+		s.dropGenreVisibleIDs()
+	}
+	return nil
 }
 
 // Clear empties the collection (for re-import on a running server).
-// The user database and meta are not touched.
+// The user database and meta are not touched. The deletes and the
+// maintained totals reset ride the same transaction so the counters can
+// never commit ahead of the emptied catalog.
 func (s *Store) Clear(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	tables := []string{
 		"book_search", "authors_search", "series_search",
 		"book_authors", "book_genres", "book_keywords", "book_series",
 		"books", "authors", "series", "genres", "keywords", "folders", "book_digests",
 	}
 	for _, table := range tables {
-		if _, err := s.db.ExecContext(ctx, `DELETE FROM `+table); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table); err != nil {
 			return fmt.Errorf("clear %s: %w", table, err)
 		}
 	}
-	s.invalidateBookCount()
+	if err := setMetaTx(ctx, tx, metaKeysVisibleCount, "0"); err != nil {
+		return err
+	}
+	if err := setMetaTx(ctx, tx, metaKeysGenreCounts, "[]"); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.dropGenreVisibleIDs()
 	return nil
 }
 

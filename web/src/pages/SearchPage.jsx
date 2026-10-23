@@ -46,11 +46,18 @@ const SearchPage = ({ config, selectedLibraryId = "" }) => {
       setStats(null);
       return undefined;
     }
+    // Obsolete requests are aborted, not merely ignored: navigation fires
+    // searches faster than they complete, and each abandoned fetch kept its
+    // full round of store work running.
+    const controller = new AbortController();
     let cancelled = false;
+    const signal = { signal: controller.signal };
     setLoading(true);
     const params = { search: query, selectedGroupID: groupId, libraryId: selectedLibraryId };
 
-    fetchSearchStats(params).then((res) => !cancelled && setStats(res?.searchStats ?? null));
+    fetchSearchStats(params, signal)
+      .then((res) => !cancelled && setStats(res?.searchStats ?? null))
+      .catch(() => {});
 
     const loaderByScope = {
       bookTitles: fetchSearchTitles,
@@ -59,15 +66,17 @@ const SearchPage = ({ config, selectedLibraryId = "" }) => {
       genres: fetchSearchGenres,
     };
 
-    (loaderByScope[scope] ?? fetchSearchTitles)(params)
+    (loaderByScope[scope] ?? fetchSearchTitles)(params, signal)
       .then((res) => {
         if (cancelled) return;
         setResults(res?.titlesList ?? res?.authorsList ?? res?.seriesList ?? res?.genresList ?? []);
       })
+      .catch(() => {})
       .finally(() => !cancelled && setLoading(false));
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [query, scope, groupId, enabled, selectedLibraryId]);
 

@@ -61,7 +61,7 @@ func (s *Store) SimilarBooks(ctx context.Context, bookID int64, limit int, libra
 	}
 	defer rows.Close()
 
-	var books []Book
+	var similar []int64
 	for rows.Next() {
 		var b Book
 		var score float64
@@ -70,9 +70,18 @@ func (s *Store) SimilarBooks(ctx context.Context, bookID int64, limit int, libra
 			&b.LibraryID, &b.LibraryName, &b.Available, &score); err != nil {
 			return nil, err
 		}
-		books = append(books, b)
+		similar = append(similar, b.ID)
 	}
-	return books, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// The scoring scan selects a reduced projection without structured
+	// author references; the full card rows (with author ids the UI links
+	// to author pages) come from the ordinary list fetch.
+	if len(similar) == 0 {
+		return nil, nil
+	}
+	return s.BooksByIDs(ctx, similar, libraryIDs...)
 }
 
 // SeriesContinuations: for finished books that belong to series, the next book in the series.

@@ -10,7 +10,7 @@ const buildQuery = (params) => {
   return qs ? `?${qs}` : "";
 };
 
-const get = (endpoint, params = {}) => api.getJson(`main/getBooks/${endpoint}${buildQuery(params)}`);
+const get = (endpoint, params = {}, opts = {}) => api.getJson(`main/getBooks/${endpoint}${buildQuery(params)}`, opts);
 
 export const fetchConfig = () => get("getConfig");
 
@@ -24,15 +24,15 @@ export const fetchCatalogShelves = ({ limit, count, libraryId } = {}) =>
 export const fetchShelfBooks = ({ shelfId, limit, offset, libraryId } = {}) =>
   get("getShelfBooks", { shelfId, limit, offset, libraryId });
 
-export const fetchSearchStats = ({ search, selectedGroupID, libraryId } = {}) => get("getSearchStats", { search, selectedGroupID, libraryId });
+export const fetchSearchStats = ({ search, selectedGroupID, libraryId } = {}, opts = {}) => get("getSearchStats", { search, selectedGroupID, libraryId }, opts);
 
-export const fetchSearchTitles = ({ search, selectedGroupID, libraryId } = {}) => get("getSearchTitles", { search, selectedGroupID, libraryId });
+export const fetchSearchTitles = ({ search, selectedGroupID, libraryId } = {}, opts = {}) => get("getSearchTitles", { search, selectedGroupID, libraryId }, opts);
 
-export const fetchSearchAuthors = ({ search, selectedGroupID, libraryId } = {}) => get("getSearchAuthors", { search, selectedGroupID, libraryId });
+export const fetchSearchAuthors = ({ search, selectedGroupID, libraryId } = {}, opts = {}) => get("getSearchAuthors", { search, selectedGroupID, libraryId }, opts);
 
-export const fetchSearchSeries = ({ search, selectedGroupID, libraryId } = {}) => get("getSearchSeries", { search, selectedGroupID, libraryId });
+export const fetchSearchSeries = ({ search, selectedGroupID, libraryId } = {}, opts = {}) => get("getSearchSeries", { search, selectedGroupID, libraryId }, opts);
 
-export const fetchSearchGenres = ({ search, libraryId } = {}) => get("getSearchGenres", { search, libraryId });
+export const fetchSearchGenres = ({ search, libraryId } = {}, opts = {}) => get("getSearchGenres", { search, libraryId }, opts);
 
 export const fetchAuthorBooks = ({ selectedItemID, selectedGroupID, libraryId } = {}) =>
   get("getSearchAuthorBooks", { selectedItemID, selectedGroupID, libraryId });
