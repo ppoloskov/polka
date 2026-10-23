@@ -2,11 +2,20 @@ package auth
 
 import "context"
 
+// BookRefPair is one loser→winner book-ID transfer. Ordered slices matter:
+// when a winner is itself the loser of a later pair (published later), an
+// earlier pair must move its rows first, so replay in publication order
+// carries chained state onto the final winner.
+type BookRefPair struct {
+	Loser  int64
+	Winner int64
+}
+
 // MergeBookRefs transfers per-book personal state from retired duplicate book
-// IDs to the kept ID. merges maps loser -> winner and is exact by
-// construction (INPX file-group consolidation); never fuzzy. The winner's
-// existing rows win conflicts, loser-only rows move.
-func (s *Service) MergeBookRefs(ctx context.Context, merges map[int64]int64) error {
+// IDs to the kept IDs, applying the given pairs in slice order. Merges are
+// exact by construction (INPX file-group consolidation); never fuzzy. The
+// winner's existing rows win conflicts, loser-only rows move.
+func (s *Service) MergeBookRefs(ctx context.Context, merges []BookRefPair) error {
 	if len(merges) == 0 {
 		return nil
 	}
@@ -15,7 +24,8 @@ func (s *Service) MergeBookRefs(ctx context.Context, merges map[int64]int64) err
 		return err
 	}
 	defer tx.Rollback()
-	for loser, winner := range merges {
+	for _, pair := range merges {
+		loser, winner := pair.Loser, pair.Winner
 		if loser == winner {
 			continue
 		}

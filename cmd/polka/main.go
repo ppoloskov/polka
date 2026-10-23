@@ -260,10 +260,10 @@ func runImport(log *slog.Logger, args []string) error {
 		if len(pairs) == 0 {
 			break
 		}
-		merges := make(map[int64]int64, len(pairs))
+		merges := make([]auth.BookRefPair, len(pairs))
 		losers := make([]int64, len(pairs))
 		for i, p := range pairs {
-			merges[p.Loser] = p.Winner
+			merges[i] = auth.BookRefPair{Loser: p.Loser, Winner: p.Winner}
 			losers[i] = p.Loser
 		}
 		if err := users.MergeBookRefs(ctx, merges); err != nil {
