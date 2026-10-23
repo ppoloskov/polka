@@ -529,4 +529,9 @@
   border: 1px solid currentColor;
   border-radius: 0.5rem;
 }
+
+/* Save failures stay non-blocking but visible (the reader keeps working). */
+.reader__save-notice {
+  border-color: #b44a12;
+}
 .reader__sync-notice button { margin: 0.25rem 0.75rem 0.25rem 0; }

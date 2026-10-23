@@ -349,7 +349,7 @@ func (im *ImportSession) addBookRelations(bookID int64, b *BookInput, series []S
 // The maintained totals ride the data transaction: they are part of the
 // committed state, not a best-effort follow-up.
 func (im *ImportSession) Finish() (ImportStats, error) {
-	if err := im.s.maintainCountsTx(im.ctx, im.tx); err != nil {
+	if err := im.s.maintainCountsTx(im.ctx, im.tx, "legacy"); err != nil {
 		return im.stats, fmt.Errorf("maintain counts: %w", err)
 	}
 	if err := im.tx.Commit(); err != nil {

@@ -321,7 +321,11 @@ func (s *Server) handleGetAuthorBooks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "selectedItemID required", http.StatusBadRequest)
 		return
 	}
-	books, name, err := s.st.AuthorBooks(r.Context(), id, r.URL.Query().Get("libraryId"))
+	// Web author pages paginate; callers without explicit limits keep the
+	// full list so existing clients (including the frontend's single
+	// request) stay compatible until the page adopts the API.
+	limit, offset := intParam(r, "limit", 0), intParam(r, "offset", 0)
+	books, name, err := s.st.AuthorBooksPage(r.Context(), id, limit, offset, r.URL.Query().Get("libraryId"))
 	if err != nil {
 		s.apiError(w, err)
 		return

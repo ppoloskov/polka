@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -123,11 +124,13 @@ func addLibraryScope(where, alias, libraryID string, args []any) (string, []any)
 }
 
 // bumpCountsTx shifts the maintained totals inside the caller's transaction:
-// the visible book count by the given delta and per-genre counts by code.
-// When the totals are not maintained yet, the full computation runs instead
-// — it observes the caller's change because it reads the same transaction.
-// Returns whether the full computation ran.
-func (s *Store) bumpCountsTx(ctx context.Context, tx *sql.Tx, visibleDelta int, genreDeltas map[string]int) (bool, error) {
+// the visible book count by the given delta and per-genre counts by code,
+// both globally and for the library that owns the change (the scoped genre
+// list reads per-library counts so the search UI never pays the direct
+// scan). When the totals are not maintained yet, the full computation runs
+// instead — it observes the caller's change because it reads the same
+// transaction. Returns whether the full computation ran.
+func (s *Store) bumpCountsTx(ctx context.Context, tx *sql.Tx, visibleDelta int, genreDeltas map[string]int, libraryID string) (bool, error) {
 	if !s.metaHoldsCountsTx(ctx, tx) {
 		return true, s.maintainCountsTx(ctx, tx)
 	}
@@ -145,36 +148,113 @@ func (s *Store) bumpCountsTx(ctx context.Context, tx *sql.Tx, visibleDelta int, 
 		}
 	}
 	if len(genreDeltas) > 0 {
-		var value string
-		if err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, metaKeysGenreCounts).Scan(&value); err != nil {
+		if err := s.adjustGenreCountsTx(ctx, tx, metaKeysGenreCounts, "", genreDeltas); err != nil {
 			return false, err
 		}
-		var counts []GenreCount
-		if json.Unmarshal([]byte(value), &counts) != nil {
-			counts = nil
-		}
-		byCode := make(map[string]int, len(counts))
-		for _, g := range counts {
-			byCode[g.Code] = g.Books
-		}
-		for code, delta := range genreDeltas {
-			byCode[code] += delta
-		}
-		merged := make([]GenreCount, 0, len(byCode))
-		for code, books := range byCode {
-			if books > 0 {
-				merged = append(merged, GenreCount{Code: code, Books: books})
+		if libraryID != "" {
+			// The scoped list key may predate this library's first change;
+			// compute it once from the same transaction instead of
+			// incrementing an unknown baseline.
+			var present string
+			if err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, libraryGenreCountsKey(libraryID)).Scan(&present); err != nil {
+				if !errors.Is(err, sql.ErrNoRows) {
+					return false, err
+				}
+				if err := s.maintainLibraryGenreCountsTx(ctx, tx, libraryID); err != nil {
+					return false, err
+				}
+			} else if err := s.adjustGenreCountsTx(ctx, tx, libraryGenreCountsKey(libraryID), libraryID, genreDeltas); err != nil {
+				return false, err
 			}
-		}
-		b, err := json.Marshal(merged)
-		if err != nil {
-			return false, err
-		}
-		if err := setMetaTx(ctx, tx, metaKeysGenreCounts, string(b)); err != nil {
-			return false, err
 		}
 	}
 	return false, nil
+}
+
+// adjustGenreCountsTx applies the deltas to one maintained genre-count JSON
+// (key of the global list, or one of a library) inside the transaction.
+func (s *Store) adjustGenreCountsTx(ctx context.Context, tx *sql.Tx, key, libraryID string, genreDeltas map[string]int) error {
+	var value string
+	if err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, key).Scan(&value); err != nil {
+		return err
+	}
+	var counts []GenreCount
+	if json.Unmarshal([]byte(value), &counts) != nil {
+		counts = nil
+	}
+	byCode := make(map[string]int, len(counts))
+	for _, g := range counts {
+		byCode[g.Code] = g.Books
+	}
+	for code, delta := range genreDeltas {
+		byCode[code] += delta
+	}
+	merged := make([]GenreCount, 0, len(byCode))
+	for code, books := range byCode {
+		if books > 0 {
+			merged = append(merged, GenreCount{Code: code, Books: books})
+		}
+	}
+	if libraryID != "" {
+		// Scoped lists may leave entries with a non-positive count (their
+		// semantics differ from the global list, see maintainCountTx).
+		b, err := json.Marshal(merged)
+		if err != nil {
+			return err
+		}
+		return setMetaTx(ctx, tx, key, string(b))
+	}
+	// The global list documents only genres with live books.
+	if len(merged) == 0 {
+		merged = []GenreCount{}
+	}
+	b, err := json.Marshal(merged)
+	if err != nil {
+		return err
+	}
+	return setMetaTx(ctx, tx, key, string(b))
+}
+
+// libraryGenreCountsKey is the maintained per-genre count list of one
+// library (the scoped genre search reads this instead of scanning).
+func libraryGenreCountsKey(libraryID string) string {
+	return metaKeysGenreCounts + "." + libraryID
+}
+
+// maintainLibraryGenreCountsTx computes and records one library's per-genre
+// visible-count list inside the transaction (the scoped genre search uses
+// it instead of scanning the join per request).
+func (s *Store) maintainLibraryGenreCountsTx(ctx context.Context, tx *sql.Tx, libraryID string) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT g.code, count(*)
+		FROM genres g
+		JOIN book_genres bg ON bg.genre_id = g.id
+		JOIN books b ON b.id = bg.book_id AND b.library_id = ? AND b.deleted = 0 AND b.missing = 0
+		GROUP BY g.id
+		HAVING count(*) > 0`, libraryID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	counts := make([]GenreCount, 0, 384)
+	for rows.Next() {
+		var g GenreCount
+		if err := rows.Scan(&g.Code, &g.Books); err != nil {
+			return err
+		}
+		counts = append(counts, g)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(counts) == 0 {
+		counts = []GenreCount{}
+	}
+	b, err := json.Marshal(counts)
+	if err != nil {
+		return err
+	}
+	return setMetaTx(ctx, tx, libraryGenreCountsKey(libraryID), string(b))
 }
 
 // bookGenreDeltaCodes returns the genre codes a book belongs to (the deltas
@@ -478,7 +558,21 @@ func (s *Store) SearchSeries(ctx context.Context, query string, limit int, libra
 	return out, rows.Err()
 }
 
+// AuthorBooks returns every book of an author in reading order (OPDS,
+// book-form export). AuthorBooksPage paginates the same list for the web
+// author page: a prolific author measured whole-page responses of thousands
+// of cards.
 func (s *Store) AuthorBooks(ctx context.Context, authorID int64, libraryIDs ...string) ([]Book, string, error) {
+	return s.authorBooks(ctx, authorID, 0, 0, libraryIDs...)
+}
+
+// AuthorBooksPage returns one page of an author's books in reading order;
+// limit &lt;= 0 returns the full list.
+func (s *Store) AuthorBooksPage(ctx context.Context, authorID int64, limit, offset int, libraryIDs ...string) ([]Book, string, error) {
+	return s.authorBooks(ctx, authorID, limit, offset, libraryIDs...)
+}
+
+func (s *Store) authorBooks(ctx context.Context, authorID int64, limit, offset int, libraryIDs ...string) ([]Book, string, error) {
 	var name string
 	err := s.readDB.QueryRowContext(ctx,
 		`SELECT trim(last_name || ' ' || first_name || ' ' || middle_name) FROM authors WHERE id = ?`,
@@ -491,7 +585,7 @@ func (s *Store) AuthorBooks(ctx context.Context, authorID int64, libraryIDs ...s
 	}
 	where, args := addLibraryScope(`b.id IN (SELECT book_id FROM book_authors WHERE author_id = ?)`, "b", scopeLibraryID(libraryIDs), []any{authorID})
 	books, err := s.queryBooks(ctx, where,
-		`coalesce(s.title, ''), b.series_num, b.title`, 0, 0, args...)
+		`coalesce(s.title, ''), b.series_num, b.title`, limit, offset, args...)
 	return books, name, err
 }
 
@@ -666,6 +760,9 @@ func (s *Store) CatalogShelves(ctx context.Context, count, limit int, libraryIDs
 		if len(books) == 0 {
 			continue
 		}
+		// The sampled request order is display order for BooksByIDs; the
+		// shelf shows books by title, as before.
+		sort.Slice(books, func(i, j int) bool { return books[i].Title < books[j].Title })
 		shelves = append(shelves, Shelf{
 			ID:      "genre_" + g.Code,
 			Title:   title,
@@ -729,6 +826,48 @@ func (s *Store) CachedGenresWithCounts(ctx context.Context, libraryIDs ...string
 		}
 	}
 	return s.GenresWithCounts(ctx)
+}
+
+// CachedGenresForLibrary serves the maintained per-genre list of one library
+// (the scoped genre search): an unavailable library has no scoped list by
+// the availability filter, matching the direct scan. Missing lists are
+// computed once transactionally (not written back from read snapshots).
+func (s *Store) CachedGenresForLibrary(ctx context.Context, libraryID string) ([]GenreCount, error) {
+	var enabled int
+	err := s.readDB.QueryRowContext(ctx, `SELECT enabled FROM libraries WHERE id = ?`, libraryID).Scan(&enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if enabled != 1 {
+		return nil, nil
+	}
+	if v := s.GetMeta(ctx, libraryGenreCountsKey(libraryID), ""); v != "" {
+		var out []GenreCount
+		if json.Unmarshal([]byte(v), &out) == nil && out != nil {
+			return out, nil
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if err := s.maintainLibraryGenreCountsTx(ctx, tx, libraryID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	if v := s.GetMeta(ctx, libraryGenreCountsKey(libraryID), ""); v != "" {
+		var out []GenreCount
+		if json.Unmarshal([]byte(v), &out) == nil {
+			return out, nil
+		}
+	}
+	return s.GenresWithCounts(ctx, libraryID)
 }
 
 // genreVisibleIDs returns the visible (live and enabled-library) member ids

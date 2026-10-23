@@ -23,11 +23,11 @@ describe("SearchPage library scope", () => {
       </MemoryRouter>
     );
     const view = render(renderSearch("north"));
-    await waitFor(() => expect(fetchSearchTitles).toHaveBeenCalledWith({ search: "space", selectedGroupID: null, libraryId: "north" }));
-    expect(fetchSearchStats).toHaveBeenCalledWith({ search: "space", selectedGroupID: null, libraryId: "north" });
+    await waitFor(() => expect(fetchSearchTitles).toHaveBeenCalledWith({ search: "space", selectedGroupID: null, libraryId: "north" }, expect.anything()));
+    expect(fetchSearchStats).toHaveBeenCalledWith({ search: "space", selectedGroupID: null, libraryId: "north" }, expect.anything());
 
     view.rerender(renderSearch("south"));
-    await waitFor(() => expect(fetchSearchTitles).toHaveBeenCalledWith({ search: "space", selectedGroupID: null, libraryId: "south" }));
+    await waitFor(() => expect(fetchSearchTitles).toHaveBeenCalledWith({ search: "space", selectedGroupID: null, libraryId: "south" }, expect.anything()));
   });
 });
 

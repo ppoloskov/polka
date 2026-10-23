@@ -32,7 +32,7 @@ func (s *Server) genreList(r *http.Request, libraryID string) []genreEntry {
 	lang := reqLang(r)
 	var counts []store.GenreCount
 	if libraryID != "" {
-		counts, _ = s.st.GenresWithCounts(r.Context(), libraryID)
+		counts, _ = s.st.CachedGenresForLibrary(r.Context(), libraryID)
 	} else {
 		s.genres.mu.Lock()
 		defer s.genres.mu.Unlock()

@@ -232,11 +232,35 @@ func (s *Store) EnsureCountsInitialized(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
-	if s.metaHoldsCountsTx(ctx, tx) {
+	if s.metaHoldsCountsTx(ctx, tx) && !s.librariesMissingGenreCountsTx(ctx, tx) {
 		return nil
 	}
 	if err := s.maintainCountsTx(ctx, tx); err != nil {
 		return err
+	}
+	// Per-library lists: the scoped genre search reads them instead of
+	// scanning the join per request.
+	libRows, err := tx.QueryContext(ctx, `SELECT id FROM libraries`)
+	if err != nil {
+		return err
+	}
+	var libraryIDs []string
+	for libRows.Next() {
+		var id string
+		if err := libRows.Scan(&id); err != nil {
+			libRows.Close()
+			return err
+		}
+		libraryIDs = append(libraryIDs, id)
+	}
+	libRows.Close()
+	if err := libRows.Err(); err != nil {
+		return err
+	}
+	for _, id := range libraryIDs {
+		if err := s.maintainLibraryGenreCountsTx(ctx, tx, id); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -256,6 +280,17 @@ func (s *Store) metaHoldsCountsTx(ctx context.Context, tx *sql.Tx) bool {
 		SELECT count(*) FROM meta WHERE key IN (?, ?)`,
 		metaKeysVisibleCount, metaKeysGenreCounts).Scan(&present)
 	return err == nil && present >= 2
+}
+
+// librariesMissingGenreCountsTx reports libraries whose per-genre count
+// list has not been recorded yet (backfill after the per-scoped-list upgrade).
+func (s *Store) librariesMissingGenreCountsTx(ctx context.Context, tx *sql.Tx) bool {
+	var missing int
+	err := tx.QueryRowContext(ctx, `
+		SELECT count(*) FROM libraries l
+		WHERE NOT EXISTS (SELECT 1 FROM meta WHERE key = ? || l.id)`,
+		metaKeysGenreCounts+".").Scan(&missing)
+	return err == nil && missing > 0
 }
 
 // MaintainCounts recomputes the visible book total and the per-genre visible
@@ -281,7 +316,10 @@ func (s *Store) MaintainCounts(ctx context.Context) error {
 }
 
 // maintainCountsTx records both count families inside an open transaction.
-func (s *Store) maintainCountsTx(ctx context.Context, tx *sql.Tx) error {
+// Focused library ids (the publishing/importing library) additionally get
+// their per-genre count list recomputed; EnsureCountsInitialized covers all
+// libraries.
+func (s *Store) maintainCountsTx(ctx context.Context, tx *sql.Tx, focusedLibraries ...string) error {
 	var total int
 	if err := tx.QueryRowContext(ctx, `
 		SELECT count(*) FROM books b WHERE b.deleted = 0 AND `+availableBook).Scan(&total); err != nil {
@@ -320,7 +358,18 @@ func (s *Store) maintainCountsTx(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	return setMetaTx(ctx, tx, metaKeysGenreCounts, string(b))
+	if err := setMetaTx(ctx, tx, metaKeysGenreCounts, string(b)); err != nil {
+		return err
+	}
+	for _, id := range focusedLibraries {
+		if id == "" {
+			continue
+		}
+		if err := s.maintainLibraryGenreCountsTx(ctx, tx, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) GetMeta(ctx context.Context, key, def string) string {

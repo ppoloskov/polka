@@ -71,7 +71,7 @@ func (s *Store) AddBook(ctx context.Context, b *BookInput) (int64, error) {
 			genreDeltas[code] = 1
 		}
 	}
-	if _, err := s.bumpCountsTx(ctx, tx, visibleDelta, genreDeltas); err != nil {
+	if _, err := s.bumpCountsTx(ctx, tx, visibleDelta, genreDeltas, effectiveLibrary); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -245,12 +245,12 @@ func (s *Store) SetBookDeleted(ctx context.Context, bookID int64, deleted bool) 
 				genreDeltas[code] += visibleDelta
 			}
 		}
-		if _, err := s.bumpCountsTx(ctx, tx, visibleDelta, genreDeltas); err != nil {
+		if _, err := s.bumpCountsTx(ctx, tx, visibleDelta, genreDeltas, libraryID); err != nil {
 			return err
 		}
 	} else if !s.metaHoldsCountsTx(ctx, tx) {
 		// Counts were never maintained (upgraded database): fill them once.
-		if _, err := s.bumpCountsTx(ctx, tx, 0, nil); err != nil {
+		if _, err := s.bumpCountsTx(ctx, tx, 0, nil, libraryID); err != nil {
 			return err
 		}
 	}
