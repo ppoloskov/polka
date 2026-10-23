@@ -96,3 +96,50 @@ the remote BuildKit smoke verified version, unprivileged `polka`, health 200,
 creation of both databases, and graceful shutdown. Evidence:
 `/private/tmp/polka-validation/cleanup-image/{build-metadata.json,registry-verification.json}`.
 The latest tag and digest-pinned live deployment were unchanged.
+
+Browsing image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-2c29b9f`
+resolves to `sha256:fe863d2125934de86b4749ed40ac5ea2e738c2652351d76830ca85a1e1aad63b`
+for Linux/amd64, built from `codex/image-libraries-browsing` commit `2c29b9f`
+(PR #12 stack + upstream PRs #16/#17/#18). Evidence:
+`/private/tmp/polka-validation/browsing-image/build-metadata.json`.
+
+Series-group image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-48f397c`
+resolves to `sha256:34c5dfbd8e5e6cd3231ebea9e63852a9727ea546be373c2c970e5dfc6e5ccdec`
+for Linux/amd64, built from `codex/image-libraries-browsing` merge commit
+`48f397c` (browsing stack + PR #14 perf, PR #16 cover caching, PR #17 INPX
+series groups). Registry digest and config digest matched the build metadata.
+Evidence: `/private/tmp/polka-validation/series-image/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+The digest-pinned live deployment was unchanged by publishing.
+
+Home-perf image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-a3fb6ba`
+resolves to `sha256:c97e07bea40641eac661bf359e9a08241c7c16abe20b84915a71c6b86054efc8`
+for Linux/amd64, built from `codex/image-libraries-browsing` merge commit
+`a3fb6ba` (series-group stack + PR #18 home endpoint perf). Registry digest and
+config digest matched the build metadata; smoke passed on the deployment node.
+Evidence: `/private/tmp/polka-validation/home-perf-image/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+The digest-pinned live deployment was unchanged by publishing.
+
+Publish-perf image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-aac9850`
+resolves to `sha256:74f79fec830065c067d4ad339ff0b6b9f308c63bb34d7aa9cfd07b5f72e2271f`
+for Linux/amd64, built from `codex/image-libraries-browsing` commit `aac9850`
+(home-perf stack + PR #19 INPX rekey fast path + PR #20 publish FTS rebuild and
+quadratic probe fix). Registry digest matched the build metadata. Real-catalog
+benchmark: the live-shaped consolidation publishes in 2m32s versus 4h15m+ for
+the running live attempt. Evidence:
+`/private/tmp/polka-validation/fts-rebuild-image-v2/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+The digest-pinned live deployment was unchanged by publishing.
+
+One-time INPX consolidation completed 2026-10-23T05:26Z on the above digest:
+`import done books=684168 duration=4m4.043s` and
+`merged consolidated book references count=132103`. The same update had ground
+for 4.5 hours without committing under the per-row delete + id-only probe
+cleanup code. Post-checks: catalog committed (polka.db 1,069,318,144 bytes),
+zero pod restarts, zero ERROR lines, home page ~100µs. Two earlier attempts
+(old code, then v1 image without the probe fix) were rolled back by pod
+restart; orphaned snapshot staging dirs were removed afterwards. The catalog
+now carries inpx:v2 group keys throughout, so routine updates are exact-key
+matches with no consolidation.

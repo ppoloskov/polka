@@ -295,6 +295,67 @@ func (s *Store) FindSimilar(ctx context.Context, title string, authorLastNames [
 	return similar, nil
 }
 
+// BookMergePair is a pending loser→winner consolidation pair awaiting its
+// users-database merge.
+type BookMergePair struct {
+	Loser  int64
+	Winner int64
+}
+
+// InsertPendingBookMergesTx records consolidation pairs inside the
+// publication transaction. Publication may otherwise lose pairs: the catalog
+// commits before the users-db merge runs, and a crash in between destroys
+// the in-memory mapping (a repeated import finds the new keys and cannot
+// reconstruct it). Row ids keep publication order, so a replay of chains
+// (a winner that is itself a later publish's loser) runs winnable-first.
+func (s *Store) InsertPendingBookMergesTx(ctx context.Context, tx *sql.Tx, pairs []BookMergePair) error {
+	if len(pairs) == 0 {
+		return nil
+	}
+	for _, p := range pairs {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO pending_book_merges (loser_id, winner_id) VALUES (?, ?)
+			ON CONFLICT (loser_id) DO UPDATE SET winner_id = excluded.winner_id`, p.Loser, p.Winner); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PendingBookMerges returns the stored pairs in publication order.
+func (s *Store) PendingBookMerges(ctx context.Context) ([]BookMergePair, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT loser_id, winner_id FROM pending_book_merges ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var pairs []BookMergePair
+	for rows.Next() {
+		var p BookMergePair
+		if err := rows.Scan(&p.Loser, &p.Winner); err != nil {
+			return nil, err
+		}
+		pairs = append(pairs, p)
+	}
+	return pairs, rows.Err()
+}
+
+// ClearPendingBookMerges acknowledges pairs whose users merge succeeded.
+// Only the given loser ids are removed so pairs recorded since the last
+// read remain pending for the next pass.
+func (s *Store) ClearPendingBookMerges(ctx context.Context, losers []int64) error {
+	if len(losers) == 0 {
+		return nil
+	}
+	placeholders := strings.Repeat("?,", len(losers)-1) + "?"
+	args := make([]any, len(losers))
+	for i, id := range losers {
+		args[i] = id
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM pending_book_merges WHERE loser_id IN (`+placeholders+`)`, args...)
+	return err
+}
+
 // BooksByIDs returns books in the order of the given ids (missing
 // and deleted ones are skipped).
 func (s *Store) BooksByIDs(ctx context.Context, ids []int64, libraryIDs ...string) ([]Book, error) {

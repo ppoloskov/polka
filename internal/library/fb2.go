@@ -1,6 +1,7 @@
 package library
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
@@ -281,4 +282,115 @@ var binaryRe = regexp.MustCompile(`(?s)<binary[^>]*>.*?</binary>`)
 // StripBinaries removes all embedded images (<binary>) from an FB2.
 func StripBinaries(data []byte) []byte {
 	return binaryRe.ReplaceAll(data, nil)
+}
+
+// fb2MissingBinaries returns FB2 image ids referenced by <image href="#…">
+// elements but not found among the <binary id> payloads, in reference order.
+// Unparseable files return nil.
+func fb2MissingBinaries(data []byte) []string {
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	dec.CharsetReader = charset.NewReaderLabel
+	dec.Strict = false
+	var referenced, embedded []string
+	hrefRe := regexp.MustCompile(`^#(.+)`)
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			// Decode errors: fall back to the exact original bytes.
+			return nil
+		}
+		start, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		switch start.Name.Local {
+		case "image":
+			for _, a := range start.Attr {
+				if a.Name.Local == "href" {
+					if m := hrefRe.FindStringSubmatch(a.Value); m != nil {
+						referenced = append(referenced, m[1])
+					}
+				}
+			}
+		case "binary":
+			id := attrValue(start, "id")
+			if id != "" {
+				embedded = append(embedded, id)
+				// skip the base64 payload quickly
+				var skip string
+				if err := dec.DecodeElement(&skip, &start); err != nil {
+					return nil
+				}
+			}
+		}
+	}
+	seen := make(map[string]bool, len(embedded))
+	for _, id := range embedded {
+		seen[id] = true
+	}
+	var missing []string
+	for _, id := range referenced {
+		if !seen[id] {
+			seen[id] = true // also dedupe repeated references
+			missing = append(missing, id)
+		}
+	}
+	return missing
+}
+
+// ReembedBinaries inserts the given payloads (fb2 image id -> raw image
+// bytes) as <binary> elements before the closing </FictionBook>. Ids come
+// from the source document and are preserved whole: the elements are emitted
+// with encoding/xml (ids are escaped, never truncated), while unprefixed
+// element and attribute names keep them in the document's default namespace
+// the way existing binaries are written. The image type is sniffed from the
+// bytes (sidecar entries carry no extensions). Returns ErrNoFile when no
+// insertion point is found.
+func ReembedBinaries(data []byte, ids []string, payloads map[string][]byte) ([]byte, error) {
+	cut := bytes.LastIndex(data, []byte("</FictionBook>"))
+	if cut < 0 {
+		return nil, ErrNoFile
+	}
+	var buf bytes.Buffer
+	buf.Grow(len(data) + 256)
+	buf.Write(data[:cut])
+	enc := xml.NewEncoder(&buf)
+	for _, id := range ids {
+		payload, ok := payloads[id]
+		if !ok || len(payload) == 0 {
+			continue
+		}
+		start := xml.StartElement{
+			Name: xml.Name{Local: "binary"},
+			Attr: []xml.Attr{
+				{Name: xml.Name{Local: "id"}, Value: id},
+				{Name: xml.Name{Local: "content-type"}, Value: sniffImageMime(payload)},
+			},
+		}
+		if err := enc.EncodeToken(start); err != nil {
+			return nil, err
+		}
+		b64 := base64.StdEncoding.EncodeToString(payload)
+		var wrapped strings.Builder
+		for len(b64) > 76 {
+			wrapped.WriteString(b64[:76])
+			wrapped.WriteByte('\n')
+			b64 = b64[76:]
+		}
+		wrapped.WriteString(b64)
+		if err := enc.EncodeToken(xml.CharData(wrapped.String())); err != nil {
+			return nil, err
+		}
+		if err := enc.EncodeToken(start.End()); err != nil {
+			return nil, err
+		}
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	buf.Write(data[cut:])
+	return buf.Bytes(), nil
 }

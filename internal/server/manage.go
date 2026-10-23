@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vestigiumincaligne/polka/internal/auth"
 	"github.com/vestigiumincaligne/polka/internal/importer"
 	"github.com/vestigiumincaligne/polka/internal/library"
 	"github.com/vestigiumincaligne/polka/internal/store"
@@ -293,7 +294,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	used := map[string]int{}
 	for _, book := range books {
 		f := book.file
-		rc, _, err := book.lib.Open(f.Folder, f.File, f.Ext)
+		rc, _, err := book.lib.CompleteFB2(f.Folder, f.File, f.Ext)
 		if err != nil {
 			s.log.Warn("export: skip missing", "book", f.ID, "error", err)
 			continue
@@ -430,7 +431,7 @@ func (s *Server) runImport(inpxPath, sourceName string, cleanup bool) {
 
 	update, stats, err := importer.UpdateInpx(ctx, s.log, s.st, "legacy", inpxPath, s.cfg.DataDir, sourceName, s.importProgress(), false)
 	if err == nil {
-		s.mergeBookRefs(ctx, update)
+		s.processPendingMerges(ctx)
 	}
 	if err == nil && s.lib != nil {
 		s.lib.ResetCovers()
@@ -494,18 +495,51 @@ func (s *Server) finishImport(update store.UpdateStats, stats store.ImportStats,
 	s.imp.stats = stats
 }
 
-// mergeBookRefs moves personal state from consolidated per-series rows onto
-// the kept books after a successful publish. The catalog update is already
-// committed, so a merge failure is logged but never fails the update.
-func (s *Server) mergeBookRefs(ctx context.Context, update store.UpdateStats) {
-	if len(update.ConsolidatedIDs) == 0 {
+// processPendingMerges applies and acknowledges pending consolidation pairs
+// through the users db. Publications record pairs inside the catalog
+// transaction (see store.InsertPendingBookMergesTx); this runs after a
+// successful publish and recovers leftovers after a crash, on every startup
+// and publish. The merge itself is idempotent: replaying a pair whose loser
+// rows already moved finds no rows and leaves personal state intact. An
+// error keeps the pairs for the next pass; nothing repeats user-visible work.
+func (s *Server) processPendingMerges(ctx context.Context) {
+	if s.users == nil || s.st == nil {
 		return
 	}
-	if err := s.users.MergeBookRefs(ctx, update.ConsolidatedIDs); err != nil {
-		s.log.Error("merge consolidated book references", "count", len(update.ConsolidatedIDs), "error", err)
-		return
+	applied := 0
+	for {
+		pairs, err := s.st.PendingBookMerges(ctx)
+		if err != nil {
+			s.log.Error("read pending book merges", "error", err)
+			return
+		}
+		if len(pairs) == 0 {
+			break
+		}
+		losers := make([]int64, len(pairs))
+		for i, p := range pairs {
+			losers[i] = p.Loser
+		}
+		// The ordered slice is passed through unchanged: a winner that is
+		// itself a later pair's loser must move its rows first, and the
+		// stored order is the publication order.
+		merges := make([]auth.BookRefPair, len(pairs))
+		for i, p := range pairs {
+			merges[i] = auth.BookRefPair{Loser: p.Loser, Winner: p.Winner}
+		}
+		if err := s.users.MergeBookRefs(ctx, merges); err != nil {
+			s.log.Error("merge consolidated book references", "count", len(pairs), "error", err)
+			return
+		}
+		if err := s.st.ClearPendingBookMerges(ctx, losers); err != nil {
+			s.log.Error("acknowledge merged book references", "count", len(losers), "error", err)
+			return
+		}
+		applied += len(pairs)
 	}
-	s.log.Info("merged consolidated book references", "count", len(update.ConsolidatedIDs))
+	if applied > 0 {
+		s.log.Info("merged consolidated book references", "count", applied)
+	}
 }
 
 // warnIfArchivesMissing checks, on a sample of catalog folders, that the

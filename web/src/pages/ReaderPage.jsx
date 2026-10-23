@@ -346,6 +346,22 @@ const ReaderPage = () => {
     return () => window.removeEventListener("keydown", onKey);
   }, [current.index, goTo]);
 
+  // Illustrations that fail to load are hidden: Flibusta dumps strip image
+  // payloads from FB2 files, so some <img> references (also "cover" ids in
+  // books absent from the covers sidecar) stay unresolved. The error event
+  // does not bubble but does propagate through the capture phase, allowing
+  // a single document-level listener to cover dynamically loaded chapters.
+  useEffect(() => {
+    const onError = (e) => {
+      const img = e.target;
+      if (img?.tagName === "IMG" && img.closest(".reader__content")) {
+        img.classList.add("fb2-img-missing");
+      }
+    };
+    document.addEventListener("error", onError, { capture: true });
+    return () => document.removeEventListener("error", onError, { capture: true });
+  }, []);
+
   // --- Footnotes ---
   const onArticleClick = (e) => {
     const jump = e.target.closest("[data-goto]");

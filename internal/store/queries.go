@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,15 +14,23 @@ type Book struct {
 	ID          int64
 	Title       string
 	AuthorNames string
+	BookAuthors []BookAuthor
 	SeriesTitle string
 	SeqNumber   int
 	Year        int
 	LibRate     float64
 	Ext         string
 	Size        int64
+	Lang        string
 	LibraryID   string
 	LibraryName string
 	Available   bool
+}
+
+// BookAuthor is a structured author reference for a book card.
+type BookAuthor struct {
+	AuthorID int64  `json:"AuthorID"`
+	Name     string `json:"Name"`
 }
 
 // BookFile holds the data needed to serve a book file.
@@ -70,13 +79,18 @@ const bookIdentityColumns = `
 	coalesce((SELECT group_concat(trim(a.last_name || ' ' || a.first_name), ', ')
 	          FROM book_authors ba JOIN authors a ON a.id = ba.author_id
 	          WHERE ba.book_id = b.id), ''),
+	coalesce((SELECT json_group_array(json_object('AuthorID', author_id, 'Name', name)) FROM (
+	          SELECT a.id AS author_id, trim(a.last_name || ' ' || a.first_name || ' ' || a.middle_name) AS name
+	          FROM book_authors ba JOIN authors a ON a.id = ba.author_id
+	          WHERE ba.book_id = b.id ORDER BY a.id)), '[]'),
 `
 
 const bookMetadataColumns = `
 	coalesce(b.year, 0),
 	b.lib_rate,
 	b.ext,
-	b.size`
+	b.size,
+	coalesce(b.lang, '')`
 
 const bookColumns = bookIdentityColumns + `
 	coalesce(s.title, ''),
@@ -131,10 +145,14 @@ func (s *Store) scanBooks(ctx context.Context, q string, args ...any) ([]Book, e
 	var books []Book
 	for rows.Next() {
 		var b Book
-		if err := rows.Scan(&b.ID, &b.Title, &b.AuthorNames, &b.SeriesTitle,
-			&b.SeqNumber, &b.Year, &b.LibRate, &b.Ext, &b.Size,
+		var authorsJSON string
+		if err := rows.Scan(&b.ID, &b.Title, &b.AuthorNames, &authorsJSON, &b.SeriesTitle,
+			&b.SeqNumber, &b.Year, &b.LibRate, &b.Ext, &b.Size, &b.Lang,
 			&b.LibraryID, &b.LibraryName, &b.Available); err != nil {
 			return nil, err
+		}
+		if err := json.Unmarshal([]byte(authorsJSON), &b.BookAuthors); err != nil {
+			return nil, fmt.Errorf("decode book authors: %w", err)
 		}
 		books = append(books, b)
 	}
@@ -559,17 +577,21 @@ func (s *Store) SearchBooks(ctx context.Context, query string, limit, offset int
 
 func (s *Store) BookDetails(ctx context.Context, bookID int64) (*BookDetails, error) {
 	d := &BookDetails{}
+	var authorsJSON string
 	err := s.readDB.QueryRowContext(ctx,
 		`SELECT`+bookColumns+`, b.file, f.name`+bookFrom+
 			` JOIN folders f ON f.id = b.folder_id WHERE b.id = ? AND b.deleted = 0 AND `+availableBook, bookID).
-		Scan(&d.ID, &d.Title, &d.AuthorNames, &d.SeriesTitle, &d.SeqNumber,
-			&d.Year, &d.LibRate, &d.Ext, &d.Size, &d.LibraryID, &d.LibraryName,
+		Scan(&d.ID, &d.Title, &d.AuthorNames, &authorsJSON, &d.SeriesTitle, &d.SeqNumber,
+			&d.Year, &d.LibRate, &d.Ext, &d.Size, &d.Lang, &d.LibraryID, &d.LibraryName,
 			&d.Available, &d.File, &d.Folder)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
+	}
+	if err := json.Unmarshal([]byte(authorsJSON), &d.BookAuthors); err != nil {
+		return nil, fmt.Errorf("decode book authors: %w", err)
 	}
 
 	rows, err := s.readDB.QueryContext(ctx, `

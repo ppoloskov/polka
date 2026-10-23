@@ -105,7 +105,7 @@ func (s *Server) handleSendBook(w http.ResponseWriter, r *http.Request) {
 	if lib == nil {
 		return
 	}
-	rc, size, err := lib.Open(f.Folder, f.File, f.Ext)
+	rc, size, err := lib.CompleteFB2(f.Folder, f.File, f.Ext)
 	if err != nil {
 		s.apiError(w, err)
 		return

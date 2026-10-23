@@ -250,6 +250,34 @@ func runImport(log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Consolidated reference moves recorded by the publish are applied here;
+	// leftovers from interrupted runs are replayed the same way (idempotent).
+	for {
+		pairs, err := st.PendingBookMerges(ctx)
+		if err != nil {
+			return fmt.Errorf("read pending book merges: %w", err)
+		}
+		if len(pairs) == 0 {
+			break
+		}
+		merges := make([]auth.BookRefPair, len(pairs))
+		losers := make([]int64, len(pairs))
+		for i, p := range pairs {
+			merges[i] = auth.BookRefPair{Loser: p.Loser, Winner: p.Winner}
+			losers[i] = p.Loser
+		}
+		if err := users.MergeBookRefs(ctx, merges); err != nil {
+			// The pairs stay pending; the next import or server start
+			// replays them idempotently.
+			log.Warn("merge consolidated book references", "count", len(merges), "error", err)
+			break
+		}
+		if err := st.ClearPendingBookMerges(ctx, losers); err != nil {
+			log.Warn("acknowledge merged book references", "count", len(losers), "error", err)
+			break
+		}
+		log.Info("merged consolidated book references", "count", len(pairs))
+	}
 	log.Info("import done",
 		"books", stats.Books, "authors", stats.Authors, "series", stats.Series,
 		"genres", stats.Genres, "duration", stats.Duration.Round(time.Millisecond))

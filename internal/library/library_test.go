@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/base64"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -428,6 +429,26 @@ func TestTextBinaryMeta(t *testing.T) {
 	if _, _, err := l.Binary("a.zip", "1", "fb2", "nope.png"); err == nil {
 		t.Error("unknown fb2 binary must fail")
 	}
+
+	// Flibusta sidecars: illustrations stripped from the FB2 live in
+	// images/<archive>.zip as <bookid>/<imageid>; "cover" falls back to
+	// the covers/ sidecar.
+	jpeg := []byte("\xFF\xD8\xFF\xE0jpegdata")
+	writeZip(t, filepath.Join(root, "images", "a.zip"), map[string][]byte{"1/ill": jpeg})
+	writeZip(t, filepath.Join(root, "covers", "a.zip"), map[string][]byte{"1": pngBytes})
+	if data, mime, err := l.Binary("a.zip", "1", "fb2", "ill"); err != nil || mime != "image/jpeg" || !bytes.Equal(data, jpeg) {
+		t.Errorf("sidecar image: %d %q %v", len(data), mime, err)
+	}
+	if data, mime, err := l.Binary("a.zip", "1", "fb2", "cover"); err != nil || mime != "image/png" || !bytes.Equal(data, pngBytes) {
+		t.Errorf("sidecar cover: %d %q %v", len(data), mime, err)
+	}
+	if _, _, err := l.Binary("a.zip", "1", "fb2", "nope"); !errors.Is(err, ErrNoFile) {
+		t.Errorf("no sidecar entry: %v", err)
+	}
+	// Embedded binaries still win over sidecars.
+	if data, _, err := l.Binary("a.zip", "1", "fb2", "other.png"); err != nil || !bytes.Equal(data, pngBytes) {
+		t.Errorf("embedded binary wins: %d %v", len(data), err)
+	}
 	data, mime, err = l.Binary("a.zip", "3", "epub", "OEBPS/img/cover.png")
 	if err != nil || !strings.HasPrefix(mime, "image/png") || !bytes.Equal(data, pngBytes) {
 		t.Errorf("epub binary: %q %v", mime, err)
@@ -496,4 +517,130 @@ func TestArchiveCandidates(t *testing.T) {
 	if !strings.Contains(err.Error(), "among 7 entries") || strings.Contains(err.Error(), "6") {
 		t.Errorf("entryNotFound sample: %v", err)
 	}
+}
+
+// A stripped Flibusta dump: the FB2 references images it does not embed,
+// the payloads live in the sidecar trees. CompleteFB2 re-embeds them for
+// downloads; books with nothing (or everything) resolvable keep their
+// exact bytes.
+func TestCompleteFB2(t *testing.T) {
+	root := t.TempDir()
+	l := New(root)
+	stripped := `<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+<description><title-info><book-title>Без картинок</book-title>
+  <coverpage><image l:href="#cover"/></coverpage></title-info></description>
+<body><section><p>Текст.</p><image l:href="#1"/></section></body>
+</FictionBook>`
+	jpeg := []byte("\xFF\xD8\xFF\xE0jpegdata")
+	writeZip(t, filepath.Join(root, "a.zip"), map[string][]byte{
+		"1.fb2": []byte(stripped), "2.fb2": []byte(testFB2), "3.txt": []byte("плейн"),
+		"4.fb2": []byte(strings.Replace(stripped, `"#1"`, `"#9"`, 1)),
+	})
+	writeZip(t, filepath.Join(root, "images", "a.zip"), map[string][]byte{"1/1": jpeg})
+	writeZip(t, filepath.Join(root, "covers", "a.zip"), map[string][]byte{"1": pngBytes})
+
+	// Missing payloads are re-embedded from the sidecars, ids in reference
+	// order, before </FictionBook>; sizes are exact for Content-Length.
+	rc, size, err := l.CompleteFB2("a.zip", "1", "fb2")
+	if err != nil {
+		t.Fatalf("complete fb2: %v", err)
+	}
+	data, _ := io.ReadAll(rc)
+	rc.Close()
+	if size != int64(len(data)) {
+		t.Errorf("size %d != %d", size, len(data))
+	}
+	if !strings.Contains(string(data), `<binary id="cover" content-type="image/png">`) ||
+		!strings.Contains(string(data), `<binary id="1" content-type="image/jpeg">`) {
+		t.Errorf("re-embedded binaries missing: %.300q", data)
+	}
+	if n := bytes.IndexByte(data, ' '); strings.Index(string(data)[:n], string(jpeg[:3])) >= 0 {
+		t.Errorf("payload not base64 encoded")
+	}
+	if !strings.Contains(string(data), "Текст.") {
+		t.Errorf("body damaged: %.300q", data)
+	}
+	if cover := base64FromBinary(t, data, "cover"); !bytes.Equal(cover, pngBytes) {
+		t.Errorf("cover payload mismatch: %d bytes", len(cover))
+	}
+	if got := base64FromBinary(t, data, "1"); !bytes.Equal(got, jpeg) {
+		t.Errorf("illustration payload mismatch")
+	}
+
+	// Exotic ids must come out escaped and whole (no truncation), and the
+	// emitted elements must stay parseable XML.
+	exotic := `<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+<description><title-info><book-title>x</book-title></title-info></description>
+<body><section><image l:href="#a&quot;9&amp;more"/><p>т</p></section></body></FictionBook>`
+	out, err := ReembedBinaries([]byte(exotic), []string{`a"9&more`}, map[string][]byte{`a"9&more`: jpeg})
+	if err != nil {
+		t.Fatalf("exotic id: %v", err)
+	}
+	if !strings.Contains(string(out), `<binary id="a&#34;9&amp;more" content-type="image/jpeg">`) {
+		t.Errorf("escaped id not preserved: %.200q", out)
+	}
+	var check struct {
+		XMLName  xml.Name `xml:"FictionBook"`
+		Binaries []struct {
+			ID string `xml:"id,attr"`
+		} `xml:"binary"`
+	}
+	if err := xml.Unmarshal(out, &check); err != nil {
+		t.Fatalf("re-embedded document does not parse: %v", err)
+	}
+	if len(check.Binaries) != 1 || check.Binaries[0].ID != `a"9&more` {
+		t.Errorf("round-tripped id = %q (%+v)", check.Binaries[0].ID, check.Binaries)
+	}
+
+	// Fully embedded book: exact original bytes.
+	rc, size, err = l.CompleteFB2("a.zip", "2", "fb2")
+	if err != nil {
+		t.Fatalf("complete embedded: %v", err)
+	}
+	data, _ = io.ReadAll(rc)
+	rc.Close()
+	if !bytes.Equal(data, []byte(testFB2)) || size != int64(len(data)) {
+		t.Errorf("embedded book changed: %d vs original %d", size, len(testFB2))
+	}
+
+	// Non-fb2 passthrough keeps exact bytes.
+	raw, _, _ := l.Open("a.zip", "3", "txt")
+	rawData, _ := io.ReadAll(raw)
+	raw.Close()
+	rc, _, err = l.CompleteFB2("a.zip", "3", "txt")
+	if err != nil {
+		t.Fatalf("txt passthrough: %v", err)
+	}
+	data, _ = io.ReadAll(rc)
+	rc.Close()
+	if !bytes.Equal(data, rawData) {
+		t.Errorf("txt must pass through unchanged")
+	}
+
+	// Nothing resolvable: exact original bytes again (no sidecar entry).
+	rc, _, err = l.CompleteFB2("a.zip", "4", "fb2")
+	if err != nil {
+		t.Fatalf("unresolvable: %v", err)
+	}
+	data, _ = io.ReadAll(rc)
+	rc.Close()
+	if !bytes.Equal(data, []byte(strings.Replace(stripped, `"#1"`, `"#9"`, 1))) {
+		t.Errorf("unresolvable book must stay byte-identical")
+	}
+}
+
+func base64FromBinary(t *testing.T, data []byte, id string) []byte {
+	t.Helper()
+	start := bytes.Index(data, []byte(`<binary id="`+id+`" content-type="`))
+	if start < 0 {
+		t.Fatalf("no binary %q", id)
+	}
+	b64 := data[bytes.IndexByte(data[start:], '>')+start+1:]
+	end := bytes.Index(b64, []byte("</binary>"))
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(b64[:end])))
+	if err != nil {
+		t.Fatalf("decode %q: %v", id, err)
+	}
+	return decoded
 }

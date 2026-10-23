@@ -176,7 +176,19 @@ under `--library-dir`.
 
 Book files may sit in plain folders or inside **ZIP or 7z archives** (the
 usual Flibusta layout, e.g. `f.fb2-…​.7z`) — Polka reads them directly, no
-unpacking needed.
+unpacking needed. Flibusta-style dumps may also carry two optional sidecar
+trees next to the book archives, which Polka consults automatically:
+
+- `covers/<archive-name>.zip|7z` — cover images named by book id
+  (e.g. `294098`), used for covers when the book file has none embedded;
+- `images/<archive-name>.zip|7z` — illustrations stripped out of FB2 files,
+  stored as `<bookid>/<imageid>` (e.g. `847837/1`), served inline while
+  reading online.
+
+Downloads (FB2 attachment, `fb2.zip` for OPDS, bulk export zip and e-mail)
+re-embed the referenced sidecar images into the FB2, so external readers get
+complete books; books that embed everything already, and files whose missing
+ids cannot be resolved, are served with their exact original bytes.
 
 Existing web and CLI imports update only the default library. Replacement stages
 the source before publication, so failures keep the current catalog. Accounts,
