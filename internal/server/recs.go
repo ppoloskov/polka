@@ -59,15 +59,19 @@ func (s *Server) userSeeds(r *http.Request, userID int64) (seeds, exclude []int6
 }
 
 // recShelves builds the personal recommendation shelves.
-func (s *Server) recShelves(r *http.Request, userID int64, limit int) []map[string]any {
+func (s *Server) recShelves(r *http.Request, userID int64, limit int, libraryIDs ...string) []map[string]any {
 	seeds, exclude := s.userSeeds(r, userID)
 	if len(seeds) == 0 {
 		return nil
 	}
 	lang := reqLang(r)
+	libraryID := ""
+	if len(libraryIDs) > 0 {
+		libraryID = libraryIDs[0]
+	}
 	var shelves []map[string]any
 
-	if next, err := s.st.SeriesContinuations(r.Context(), seeds, exclude, limit); err == nil && len(next) > 0 {
+	if next, err := s.st.SeriesContinuations(r.Context(), seeds, exclude, limit, libraryID); err == nil && len(next) > 0 {
 		// Collections contain duplicate editions — collapse by title.
 		seen := map[string]bool{}
 		deduped := next[:0]
@@ -82,7 +86,7 @@ func (s *Server) recShelves(r *http.Request, userID int64, limit int) []map[stri
 			"id": "series_next", "title": tr(lang, "shelf.series_next"), "books": booksJSON(deduped), "hasMore": false,
 		})
 	}
-	if recs, err := s.st.RecommendForUser(r.Context(), seeds, exclude, limit); err == nil && len(recs) > 0 {
+	if recs, err := s.st.RecommendForUser(r.Context(), seeds, exclude, limit, libraryID); err == nil && len(recs) > 0 {
 		shelves = append(shelves, map[string]any{
 			"id": "for_you", "title": tr(lang, "shelf.for_you"), "books": booksJSON(recs), "hasMore": false,
 		})
@@ -110,7 +114,8 @@ func (s *Server) handleGetSimilarBooks(w http.ResponseWriter, r *http.Request) {
 	title := strings.TrimSpace(strings.ReplaceAll(r.URL.Query().Get("title"), "+", " "))
 	author := strings.TrimSpace(strings.ReplaceAll(r.URL.Query().Get("author"), "+", " "))
 
-	local, err := s.st.SimilarBooks(r.Context(), bookID, 24)
+	libraryID := r.URL.Query().Get("libraryId")
+	local, err := s.st.SimilarBooks(r.Context(), bookID, 24, libraryID)
 	if err != nil {
 		s.apiError(w, err)
 		return
@@ -142,7 +147,7 @@ func (s *Server) handleGetSimilarBooks(w http.ResponseWriter, r *http.Request) {
 	if title != "" {
 		cfg := s.similarConfig(r)
 		for _, sim := range s.enrich.Similar(r.Context(), "sim:"+strconv.FormatInt(bookID, 10), title, author, cfg) {
-			if b, err := s.st.MatchBook(r.Context(), sim.Title, sim.Author); err == nil {
+			if b, err := s.st.MatchBook(r.Context(), sim.Title, sim.Author); err == nil && (libraryID == "" || b.LibraryID == libraryID) {
 				if !seen[b.ID] {
 					seen[b.ID] = true
 					externalCards = append(externalCards, *b)
