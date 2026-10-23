@@ -500,7 +500,9 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 				rekeyed++
 				// The rebound row now carries its v2 key; keep the temp probe
 				// consistent so a same-(folder, file) probe cannot rebind it.
-				if _, err := tx.ExecContext(ctx, `DELETE FROM polka_v1_files WHERE id=?`, group[0].ID); err != nil {
+				// The predicate must cover the probe index prefix: an id-only
+				// delete would full-scan the probe table once per group.
+				if _, err := tx.ExecContext(ctx, `DELETE FROM polka_v1_files WHERE folder=? AND file=? AND ext=? AND id=?`, book.Folder, book.File, book.Ext, group[0].ID); err != nil {
 					return stats, err
 				}
 				for _, loser := range group[1:] {
