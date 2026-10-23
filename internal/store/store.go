@@ -42,6 +42,20 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	// Pending book-reference merges bridge the catalog and users databases:
+	// consolidation pairs are recorded inside the publication transaction and
+	// acknowledged only after the users merge applied them (mergeBookRefs).
+	// The table is created lazily instead of through a schema-version bump so
+	// a rolled-back older binary runs unaffected, and nothing here blocks a
+	// database that never consolidates.
+	if _, err := db.ExecContext(context.Background(), `CREATE TABLE IF NOT EXISTS pending_book_merges (
+		id        INTEGER PRIMARY KEY,
+		loser_id  INTEGER NOT NULL UNIQUE,
+		winner_id INTEGER NOT NULL
+	)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create pending book merges table: %w", err)
+	}
 	// In-memory databases are connection-local unless opened with a shared
 	// cache URI. Reuse the writer in that case; file databases get a WAL reader.
 	if strings.Contains(path, ":memory:") {

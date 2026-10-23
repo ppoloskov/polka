@@ -423,6 +423,9 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 	}
 	v1Probe := false
 	rekeyed := 0
+	// Consolidation pairs are recorded in this transaction (pending book
+	// merges) so the users-db merge survives a crash after the commit.
+	var pendingMerges []BookMergePair
 	// Mark currently present source rows so the staged keys can restore matches
 	// and the rows left marked at the end are newly missing.
 	if _, err := tx.ExecContext(ctx, `UPDATE books SET missing=2 WHERE library_id=? AND source_key!='' AND missing=0`, libraryID); err != nil {
@@ -510,6 +513,7 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 						stats.ConsolidatedIDs = make(map[int64]int64)
 					}
 					stats.ConsolidatedIDs[loser.ID] = group[0].ID
+					pendingMerges = append(pendingMerges, BookMergePair{Loser: loser.ID, Winner: group[0].ID})
 				}
 				stats.Changed++
 				continue
@@ -695,6 +699,13 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 		if _, err := tx.ExecContext(ctx, `UPDATE libraries SET source_path=? WHERE id=?`, snapshot.sourcePath, libraryID); err != nil {
 			return stats, err
 		}
+	}
+	// Consolidation pairs must survive the crash window between the catalog
+	// commit and the users-db merge: recorded here, applied and acknowledged
+	// after the commit (processPendingMerges), with idempotent replay as the
+	// recovery mechanism.
+	if err := s.InsertPendingBookMergesTx(ctx, tx, pendingMerges); err != nil {
+		return stats, fmt.Errorf("record pending book merges: %w", err)
 	}
 	// Covers can change on any committed publish (the server resets the
 	// cover cache), so bump the per-library cover generation backing the

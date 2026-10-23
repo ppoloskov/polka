@@ -67,6 +67,8 @@ func New(cfg *config.Config, log *slog.Logger, st *store.Store, lib *library.Lib
 		}
 		// Matching may be stale after a re-import; recompute in the background.
 		go s.rematchCollections(context.Background())
+		// Recover consolidation merges interrupted after a catalog commit.
+		go s.processPendingMerges(context.Background())
 		if cfg.DataDir != "" && cfg.Auth != "demo" {
 			go s.sourcesLoop(context.Background())
 		}

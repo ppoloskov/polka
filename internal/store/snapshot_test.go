@@ -779,3 +779,73 @@ func TestPublishLibraryReusesExistingEntitiesAndIndexesNewOnes(t *testing.T) {
 		t.Fatal("new book was not added to full-text search")
 	}
 }
+
+// Consolidation pairs are recorded inside the publication transaction so the
+// users-db merge can be recovered after a crash between the catalog commit
+// and the merge: they must still be present after the commit, replay in
+// publication order (a winner can itself be a later publish's loser), and
+// an acknowledgement must remove only the acknowledged pairs.
+func TestPublishLibraryRecordsPendingMergesForRecovery(t *testing.T) {
+	st, ctx := snapshotStore(t)
+	libraryID := snapshotLibrary(t, st, ctx, "recoverable")
+
+	alpha := snapshotEntry("inpx:v1:alpha", "Series book")
+	alpha.book.File = "multi"
+	alpha.book.Series = "Alpha"
+	alpha.book.SeriesNum = 1
+	beta := snapshotEntry("inpx:v1:beta", "Series book")
+	beta.book.File = "multi"
+	beta.book.Series = "Beta"
+	beta.book.SeriesNum = 2
+	if err := publishTestSnapshot(t, st, ctx, libraryID, alpha, beta); err != nil {
+		t.Fatal(err)
+	}
+	winnerID := snapshotBookID(t, st, libraryID, "inpx:v1:alpha")
+	loserID := snapshotBookID(t, st, libraryID, "inpx:v1:beta")
+	if winnerID >= loserID {
+		t.Fatalf("fixture IDs out of order: winner %d, loser %d", winnerID, loserID)
+	}
+
+	// First consolidation: beta retires onto alpha. The merge is never
+	// applied — this simulates the crash window the pending table covers.
+	group := snapshotEntry("inpx:v2:group", "Series book (union)")
+	group.book.File = "multi"
+	group.book.Series = "Alpha"
+	group.book.SeriesNum = 1
+	group.book.SeriesList = []SeriesRef{{Title: "Alpha", SeqNumber: 1}, {Title: "Beta", SeqNumber: 2}}
+	snap := newTestSnapshot(t, ctx, group)
+	stats, err := st.PublishLibrary(ctx, libraryID, snap, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats.ConsolidatedIDs) != 1 || stats.ConsolidatedIDs[loserID] != winnerID {
+		t.Fatalf("consolidation pairs = %v, want %d -> %d", stats.ConsolidatedIDs, loserID, winnerID)
+	}
+
+	// A later publish of the same set is an exact rekey and must not add
+	// pairs: the winner already holds the v2 key.
+	if err := publishTestSnapshot(t, st, ctx, libraryID, group); err != nil {
+		t.Fatal(err)
+	}
+
+	pairs, err := st.PendingBookMerges(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pairs) != 1 || pairs[0].Loser != loserID || pairs[0].Winner != winnerID {
+		t.Fatalf("pending pairs = %v, want exactly [loser %d -> winner %d]", pairs, loserID, winnerID)
+	}
+
+	// Acknowledge only known loser ids: an unknown id in the same call must
+	// not fail, and nothing else is pending afterwards.
+	if err := st.ClearPendingBookMerges(ctx, []int64{loserID, math.MaxInt64}); err != nil {
+		t.Fatal(err)
+	}
+	remaining, err := st.PendingBookMerges(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("pending pairs after clear = %v, want none", remaining)
+	}
+}

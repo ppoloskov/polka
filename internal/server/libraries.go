@@ -178,7 +178,7 @@ func (s *Server) runLibraryUpdate(item *store.Library, allowEmpty bool) {
 		updateErr = fmt.Errorf("unsupported library kind %q", item.Kind)
 	}
 	if updateErr == nil {
-		s.mergeBookRefs(ctx, update)
+		s.processPendingMerges(ctx)
 		s.resetLibraryCovers(item)
 		s.invalidateGenreCounts()
 	}
