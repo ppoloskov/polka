@@ -259,6 +259,36 @@ for Linux/amd64, built from `codex/image-libraries-browsing` commit `448e7ae`
 indexes, per-genre member lists, reader pool 8). Registry digest matched the
 build metadata. Evidence:
 `/private/tmp/polka-perf-image/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+SUPERSEDED by the review-fix image below; do not deploy 448e7ae.
+
+Review-follow-up delivery on PR #22 (`937ace2`, image branch `e237644`) —
+all six review items addressed: upload/delete/restore/library-toggle/clear
+now maintain counts in their own transaction (deltas) instead of
+committing first and scanning later (the upload failure could previously
+delete the file of a committed book); genre pagination guards past-list
+offsets and returns exactly its requested row count; the per-genre cache
+install is guarded by a generation counter against publication races;
+missing totals initialize transactionally (EnsureCountsInitialized) with a
+background seed at Open (Close waits for it); genre recommendations sample
+member ids uniformly (partial Fisher-Yates) instead of a contiguous
+window; the stray debug print is removed and pagination reuses BooksByIDs.
+Reader page cache reduced to 16 MiB per connection (writer keeps 64 MiB):
+measured RSS 412-423 MB on the 1.6M-row benchmark under load. Re-measured
+after fixes at c=8 p95: home shelves 66ms, genre pages 8ms, catalog shelves
+0.6s, covers ~1ms; deep-offset edge and one-time initialization unchanged
+in shape. Evidence of the process failure worth remembering: two publishes
+of image2 shipped the SAME digest as 448e7ae because the retry script kept
+the previous image's directory paths; the fix is to rewrite the whole
+script (paths AND tag) per build and verify the digest differs from the
+previous build before recording it.
+
+Review-fix image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-e237644`
+resolves to `sha256:427655cd33cf9ee916d0a927730e2faac6d5f24f6cd8d83682caff929275d643`
+for Linux/amd64, built from `codex/image-libraries-browsing` commit `e237644`
+(all review follow-ups). Registry digest matched the build metadata and
+DIFFERS from the superseded 448e7ae digest. Evidence:
+`/private/tmp/polka-perf-image2/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
 The digest-pinned live deployment was unchanged by publishing; this tag
 supersedes all earlier browsing tags for deployment.
 
