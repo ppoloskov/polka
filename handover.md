@@ -166,6 +166,39 @@ placeholders; README documents the sidecar layout. Verified in-pod against the
 real dump: `Binary("0")` → 59 KB jpeg, `Binary("1")` → 1.7 KB jpeg,
 `Binary("cover")` → 294 KB jpeg (all 404 before the fix).
 
+Review follow-ups (2026-10-23, on the stacked series):
+
+P1, delivered in PR #21 (`f0c2ce6`): consolidation loser→winner pairs are
+now recorded in a `pending_book_merges` table inside the publication
+transaction (table created lazily at store open, deliberately without a
+schema-version bump so a rolled-back older binary runs unaffected). The
+users-db merge runs from the persisted pairs after commit and clears them;
+failure keeps the pairs, and startup, the next publish and the CLI import
+replay them idempotently through the existing `auth.MergeBookRefs`. Insertion
+order preserves publication order so chains replay winner-of-pairs-first.
+
+P2, delivered in PR #21 (`3b41bee`): re-inserted FB2 binaries are emitted
+through encoding/xml (ids escaped, never truncated to the old 200 chars),
+with a round-trip test using an id containing quotes and ampersands.
+
+P2, delivered by rewriting PR #16 at its source (branch rebased #17–#21 on
+top): the shared in-memory failed-cover blacklist was removed — it
+permanently suppressed covers per session, including on transient network
+errors, and nothing invalidated it after imports. Request suppression now
+relies on the server's `Cache-Control: private, max-age=3600` missing-cover
+responses plus the pre-existing local component fallback. Web tests dropped
+71→67 accordingly. The digest `multiple-libraries-browsing-1f8200b` and
+`...-7c6552a` images below predate this rewrite; the newest image entry
+supersedes them.
+
+P2, disposition only (no code change): the identity experiment in the
+PRIMARY checkout `/Users/paul/projects/polka` (fuzzy author/title
+normalization, ID allocation above the current maximum, clearing the active
+catalog mid-replacement) remains excluded from delivery — the isolated
+worktree owns the feature. Preserving the dirty primary checkout is
+intentional per the working conventions; it is not a production alternative
+and must never be staged or published with the feature.
+
 Sidecar-format image publication (no merge or deployment):
 `registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-1f8200b`
 resolves to `sha256:65b6b1838427bb2b411875285f6aa0ebeb2c49a092cd87c1f78fac3767dd37b1`
