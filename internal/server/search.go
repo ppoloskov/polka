@@ -28,12 +28,8 @@ type genreEntry struct {
 
 const genreCacheTTL = 5 * time.Minute
 
-func (s *Server) genreList(r *http.Request, libraryIDs ...string) []genreEntry {
+func (s *Server) genreList(r *http.Request, libraryID string) []genreEntry {
 	lang := reqLang(r)
-	libraryID := ""
-	if len(libraryIDs) > 0 {
-		libraryID = libraryIDs[0]
-	}
 	var counts []store.GenreCount
 	if libraryID != "" {
 		counts, _ = s.st.GenresWithCounts(r.Context(), libraryID)
@@ -58,10 +54,10 @@ func (s *Server) genreList(r *http.Request, libraryIDs ...string) []genreEntry {
 }
 
 // searchGenres filters genres by a substring of the Russian name or the code.
-func (s *Server) searchGenres(r *http.Request, query string, libraryIDs ...string) []genreEntry {
+func (s *Server) searchGenres(r *http.Request, query, libraryID string) []genreEntry {
 	q := strings.ToLower(strings.ReplaceAll(query, "ё", "е"))
 	var out []genreEntry
-	for _, g := range s.genreList(r, libraryIDs...) {
+	for _, g := range s.genreList(r, libraryID) {
 		name := strings.ToLower(strings.ReplaceAll(g.Name, "ё", "е"))
 		if strings.Contains(name, q) || strings.Contains(strings.ToLower(g.Code), q) {
 			out = append(out, g)
@@ -87,11 +83,7 @@ func (s *Server) handleGetSearchGenres(w http.ResponseWriter, r *http.Request) {
 
 // isbnBooks — ISBN search: the local column first, then external title
 // resolution followed by a collection search.
-func (s *Server) isbnBooks(r *http.Request, query string, libraryIDs ...string) []store.Book {
-	libraryID := ""
-	if len(libraryIDs) > 0 {
-		libraryID = libraryIDs[0]
-	}
+func (s *Server) isbnBooks(r *http.Request, query, libraryID string) []store.Book {
 	books, err := s.st.SearchByISBN(r.Context(), query, libraryID)
 	if err == nil && len(books) > 0 {
 		return books
@@ -104,8 +96,6 @@ func (s *Server) isbnBooks(r *http.Request, query string, libraryIDs ...string) 
 		if b, err := s.st.MatchBook(r.Context(), info.Title, info.Author); err == nil {
 			return []store.Book{*b}
 		}
-	} else if scoped, err := s.st.SearchTitles(r.Context(), info.Title, 10, libraryID); err == nil && len(scoped) > 0 {
-		return scoped
 	}
 	// Resolution succeeded but there is no exact match — show close title matches.
 	if loose, err := s.st.SearchTitles(r.Context(), info.Title, 10, libraryID); err == nil {

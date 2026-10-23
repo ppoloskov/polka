@@ -17,7 +17,7 @@ checkout work; implementation lives in the attached multiple-libraries worktree.
 | Management API | Register/name/enable/manual-update; diff status | PR #9, `e8d15a9`; full Go checks and HTTP lifecycle |
 | Catalog scope | Filter before pagination; source fields; personal retention | PR #10, `9ed3655`; full Go checks in pr10 |
 | Admin UI | Existing screen controls both sources and manual updates | PR #11, `eca0ab3`; 41 web tests/build and both binaries in pr11 |
-| Minimal completion | Reader selector/badges/unavailable cards; shared metadata parser | Implemented; final exact-head checks gate publication |
+| Minimal completion | Reader selector/badges/unavailable cards; shared metadata parser | PR #12, `a6d31b6`; exact-head Go/web checks, native upgrade and HTTP acceptance |
 
 Full Go checks mean `go test ./...`, `go vet ./...`, server and desktop builds
 from each exact committed archive. Frontend checks use the unchanged lockfile;
@@ -74,4 +74,5 @@ paging/bulk export, enable/disable and durable restart. Live IAB review confirme
 manual update counts, source selection, unavailable cards and own-root reading;
 management wording/status placement corrections followed; the updated web suite
 passes 57 tests/build. Exact committed-head
-checks and PR metadata audit remain the publication gate; Docker is unavailable.
+checks and PR metadata audit passed for PR #12. Docker is unavailable locally;
+follow-up image publication uses the existing remote BuildKit and Zot services.

@@ -553,12 +553,12 @@ func (s *Store) GenresWithCounts(ctx context.Context, libraryIDs ...string) ([]G
 
 // SearchBooks searches across all fields (title, authors, series)
 // with pagination, for the OPDS catalog.
-func (s *Store) SearchBooks(ctx context.Context, query string, limit, offset int, libraryIDs ...string) ([]Book, error) {
+func (s *Store) SearchBooks(ctx context.Context, query string, limit, offset int) ([]Book, error) {
 	q := ftsQuery(query, "")
 	if q == "" {
 		return nil, nil
 	}
-	return s.rankedSearch(ctx, q, limit, offset, scopeLibraryID(libraryIDs))
+	return s.rankedSearch(ctx, q, limit, offset, "")
 }
 
 // --- Book card and book file ---
@@ -656,30 +656,18 @@ func (s *Store) BookFile(ctx context.Context, bookID int64) (*BookFile, error) {
 
 // AuthorsByPrefix lists authors whose last name falls in [lo, hi),
 // ordered by name — for alphabetical OPDS browsing. Uses idx_authors_name.
-func (s *Store) AuthorsByPrefix(ctx context.Context, lo, hi string, limit, offset int, libraryIDs ...string) ([]AuthorEntry, error) {
-	libraryID := scopeLibraryID(libraryIDs)
-	countWhere, countArgs := addLibraryScope(`b.deleted = 0 AND `+availableBook, "b", libraryID, nil)
-	args := append([]any{}, countArgs...)
-	args = append(args, lo, hi)
-	whereScope := ""
-	if libraryID != "" {
-		whereScope = ` AND EXISTS (SELECT 1 FROM book_authors ba JOIN books b ON b.id = ba.book_id
-			WHERE ba.author_id = a.id AND b.deleted = 0 AND ` + countWhere + `)`
-		args = append(args, libraryID)
-	}
-	args = append(args, limit, offset)
+func (s *Store) AuthorsByPrefix(ctx context.Context, lo, hi string, limit, offset int) ([]AuthorEntry, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT a.id,
 		       trim(a.last_name || ' ' || a.first_name || ' ' || a.middle_name),
 		       (SELECT count(*) FROM book_authors ba JOIN books b ON b.id = ba.book_id
-		        WHERE ba.author_id = a.id AND `+countWhere+`)
+		        WHERE ba.author_id = a.id AND b.deleted = 0 AND `+availableBook+`)
 		FROM authors a
 		WHERE a.last_name >= ? AND a.last_name < ?
 		  AND EXISTS (SELECT 1 FROM book_authors ba JOIN books b ON b.id = ba.book_id
 		              WHERE ba.author_id = a.id AND b.deleted = 0 AND `+availableBook+`)
-		`+whereScope+`
 		ORDER BY a.last_name, a.first_name
-		LIMIT ? OFFSET ?`, args...)
+		LIMIT ? OFFSET ?`, lo, hi, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -696,29 +684,17 @@ func (s *Store) AuthorsByPrefix(ctx context.Context, lo, hi string, limit, offse
 }
 
 // SeriesByPrefix lists series whose title falls in [lo, hi), ordered by title.
-func (s *Store) SeriesByPrefix(ctx context.Context, lo, hi string, limit, offset int, libraryIDs ...string) ([]SeriesEntry, error) {
-	libraryID := scopeLibraryID(libraryIDs)
-	countWhere, countArgs := addLibraryScope(`b.deleted = 0 AND `+availableBook, "b", libraryID, nil)
-	args := append([]any{}, countArgs...)
-	args = append(args, lo, hi)
-	whereScope := ""
-	if libraryID != "" {
-		whereScope = ` AND EXISTS (SELECT 1 FROM book_series bs JOIN books b ON b.id = bs.book_id
-			WHERE bs.series_id = s.id AND b.deleted = 0 AND ` + countWhere + `)`
-		args = append(args, libraryID)
-	}
-	args = append(args, limit, offset)
+func (s *Store) SeriesByPrefix(ctx context.Context, lo, hi string, limit, offset int) ([]SeriesEntry, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id, s.title,
 		       (SELECT count(*) FROM book_series bs JOIN books b ON b.id = bs.book_id
-	                 WHERE bs.series_id = s.id AND `+countWhere+`)
+		        WHERE bs.series_id = s.id AND b.deleted = 0 AND `+availableBook+`)
 		FROM series s
 		WHERE s.title >= ? AND s.title < ?
 		  AND EXISTS (SELECT 1 FROM book_series bs JOIN books b ON b.id = bs.book_id
 		              WHERE bs.series_id = s.id AND b.deleted = 0 AND `+availableBook+`)
-		`+whereScope+`
 		ORDER BY s.title
-		LIMIT ? OFFSET ?`, args...)
+		LIMIT ? OFFSET ?`, lo, hi, limit, offset)
 	if err != nil {
 		return nil, err
 	}

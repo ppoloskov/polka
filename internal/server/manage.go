@@ -356,21 +356,10 @@ func (s *Server) handleImportStatus(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleImportInpx(w http.ResponseWriter, r *http.Request) {
-	s.imp.mu.Lock()
-	if s.imp.running {
-		s.imp.mu.Unlock()
+	if !s.startImport("legacy") {
 		http.Error(w, "import is already running", http.StatusConflict)
 		return
 	}
-	s.imp.running = true
-	s.imp.phase = "starting"
-	s.imp.processed = 0
-	s.imp.libraryID = "legacy"
-	s.imp.update = store.UpdateStats{}
-	s.imp.err = ""
-	s.imp.warning = ""
-	s.imp.stats = store.ImportStats{}
-	s.imp.mu.Unlock()
 
 	fail := func(code int, msg string) {
 		s.imp.mu.Lock()
@@ -439,7 +428,46 @@ func (s *Server) runImport(inpxPath, sourceName string, cleanup bool) {
 	}
 	ctx := context.Background()
 
-	setPhase := func(phase string, processed int) {
+	update, stats, err := importer.UpdateInpx(ctx, s.log, s.st, "legacy", inpxPath, s.cfg.DataDir, sourceName, s.importProgress(), false)
+	if err == nil && s.lib != nil {
+		s.lib.ResetCovers()
+	}
+	if err == nil {
+		s.invalidateGenreCounts()
+	}
+	s.finishImport(update, stats, err)
+	if err != nil {
+		s.log.Error("web import", "error", err)
+	} else {
+		s.log.Info("web import done", "books", stats.Books, "duration", stats.Duration)
+	}
+	if err == nil {
+		s.warnIfArchivesMissing(ctx)
+		s.rematchCollections(ctx)
+	}
+}
+
+// startImport, importProgress and finishImport are shared by the legacy import
+// endpoint and saved library updates so both expose the same lifecycle state.
+func (s *Server) startImport(libraryID string) bool {
+	s.imp.mu.Lock()
+	defer s.imp.mu.Unlock()
+	if s.imp.running {
+		return false
+	}
+	s.imp.running = true
+	s.imp.phase = "starting"
+	s.imp.processed = 0
+	s.imp.stats = store.ImportStats{}
+	s.imp.libraryID = libraryID
+	s.imp.update = store.UpdateStats{}
+	s.imp.err = ""
+	s.imp.warning = ""
+	return true
+}
+
+func (s *Server) importProgress() func(string, int) {
+	return func(phase string, processed int) {
 		s.imp.mu.Lock()
 		s.imp.phase = phase
 		if processed > 0 {
@@ -447,35 +475,20 @@ func (s *Server) runImport(inpxPath, sourceName string, cleanup bool) {
 		}
 		s.imp.mu.Unlock()
 	}
+}
 
-	finish := func(update store.UpdateStats, stats store.ImportStats, err error) {
-		s.imp.mu.Lock()
-		defer s.imp.mu.Unlock()
-		s.imp.running = false
-		if err != nil {
-			s.imp.phase = "error"
-			s.imp.err = err.Error()
-			s.log.Error("web import", "error", err)
-			return
-		}
-		s.imp.phase = "done"
-		s.imp.update = update
-		s.imp.stats = stats
-		s.log.Info("web import done", "books", stats.Books, "duration", stats.Duration)
+func (s *Server) finishImport(update store.UpdateStats, stats store.ImportStats, err error) {
+	s.imp.mu.Lock()
+	defer s.imp.mu.Unlock()
+	s.imp.running = false
+	if err != nil {
+		s.imp.phase = "error"
+		s.imp.err = err.Error()
+		return
 	}
-
-	update, stats, err := importer.UpdateInpx(ctx, s.log, s.st, "legacy", inpxPath, s.cfg.DataDir, sourceName, setPhase, false)
-	if err == nil && s.lib != nil {
-		s.lib.ResetCovers()
-	}
-	if err == nil {
-		s.invalidateGenreCounts()
-	}
-	finish(update, stats, err)
-	if err == nil {
-		s.warnIfArchivesMissing(ctx)
-		s.rematchCollections(ctx)
-	}
+	s.imp.phase = "done"
+	s.imp.update = update
+	s.imp.stats = stats
 }
 
 // warnIfArchivesMissing checks, on a sample of catalog folders, that the
