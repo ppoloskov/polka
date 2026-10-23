@@ -37,8 +37,8 @@ export const api = {
   baseUrl,
   buildUrl,
 
-  async getJson(path) {
-    const res = await request(path);
+  async getJson(path, init = {}) {
+    const res = await request(path, init);
     return res.json();
   },
 
