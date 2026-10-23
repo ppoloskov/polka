@@ -174,3 +174,23 @@ for Linux/amd64, built from `codex/image-libraries-browsing` commit `1f8200b`
 coverless/stripped Flibusta dumps). Registry digest matched the build metadata.
 Evidence: `/private/tmp/polka-validation/sidecar-image/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
 The digest-pinned live deployment was unchanged by publishing.
+
+Download re-embedding delivered on PR #21 (`f3d2eb4`): `Library.CompleteFB2`
+scans referenced-vs-embedded FB2 ids, collects missing payloads from the
+images/ sidecar in one pass per archive (plus the `cover` id from covers/)
+and re-embeds them as `<binary>` elements; served from the FB2 attachment,
+`fb2.zip`/OPDS, bulk export and e-mail. The reader path and `.compact.fb2`
+intentionally stay on the original file; unchanged books keep exact bytes.
+The zip/7z sidecar scan was consolidated into one shared helper. Verified
+in-pod against the real dump, book 847392: 699,936 → 952,981 bytes with
+`cover`/`0`/`1` base64 payloads embedded and a single closing
+`</FictionBook>`.
+
+Sidecar-download image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-7c6552a`
+resolves to `sha256:2a286d3292880b0fbae7c77612886c5297ee2354967260ebe5ee51736d706b42`
+for Linux/amd64, built from `codex/image-libraries-browsing` merge commit
+`7c6552a` (all-of-the-above + PR #21 download re-embedding). Registry digest
+matched the build metadata. Evidence:
+`/private/tmp/polka-validation/sidecar-image2/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+The digest-pinned live deployment was unchanged by publishing.
