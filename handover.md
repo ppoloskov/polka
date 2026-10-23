@@ -112,3 +112,12 @@ for Linux/amd64, built from `codex/image-libraries-browsing` merge commit
 series groups). Registry digest and config digest matched the build metadata.
 Evidence: `/private/tmp/polka-validation/series-image/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
 The digest-pinned live deployment was unchanged by publishing.
+
+Home-perf image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-a3fb6ba`
+resolves to `sha256:c97e07bea40641eac661bf359e9a08241c7c16abe20b84915a71c6b86054efc8`
+for Linux/amd64, built from `codex/image-libraries-browsing` merge commit
+`a3fb6ba` (series-group stack + PR #18 home endpoint perf). Registry digest and
+config digest matched the build metadata; smoke passed on the deployment node.
+Evidence: `/private/tmp/polka-validation/home-perf-image/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+The digest-pinned live deployment was unchanged by publishing.

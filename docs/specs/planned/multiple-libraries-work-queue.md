@@ -21,6 +21,7 @@ checkout work; implementation lives in the attached multiple-libraries worktree.
 | Publication reads/perf | WAL reader, bulk publish, scoped FTS indexing, cover ETags | PR #14, `ed473ff`; full Go checks and 60 web tests |
 | Cover 404 caching | Missing covers cacheable; web stops re-requesting failed covers | PR #16, `e8428eb`; full Go checks and 64 web tests |
 | INPX series groups | Multi-series files collapse to one entry; v1 rows consolidated | PR #17, `bd5fa6b`; full Go checks |
+| Home endpoint perf | Cached visible count, genre-rec plan fix, 64 MiB page cache | PR #18, `58f712c`; full Go checks |
 
 Full Go checks mean `go test ./...`, `go vet ./...`, server and desktop builds
 from each exact committed archive. Frontend checks use the unchanged lockfile;
