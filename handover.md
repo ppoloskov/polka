@@ -289,6 +289,22 @@ for Linux/amd64, built from `codex/image-libraries-browsing` commit `e237644`
 (all review follow-ups). Registry digest matched the build metadata and
 DIFFERS from the superseded 448e7ae digest. Evidence:
 `/private/tmp/polka-perf-image2/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+SUPERSEDED by the round-2 image below. The round-2 review probes found two
+remaining upload-delta bugs: uploads into disabled libraries bumped genre
+totals while the book is invisible, and duplicate genre codes
+(`["sf","sf"]`) doubled the delta although only one membership is stored.
+Fixed in PR #22 (`a0b2ff9`): genre deltas apply under the same
+enabled-library condition as the visible-count delta and count each code
+once; covered by `TestBookCountDeltasMatchVisibility`, which also
+cross-checks the maintained totals against an exact recount.
+
+Round-2 image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-7f86cce`
+resolves to `sha256:a3950d398552a364b7e15ca5a65b160feb577bbf362ca81bd79c046a16c94782`
+for Linux/amd64, built from `codex/image-libraries-browsing` commit `7f86cce`
+(all review follow-ups including round 2). Registry digest matched the build
+metadata and differs from both earlier page-latency digests. Evidence:
+`/private/tmp/polka-perf-image3/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
 The digest-pinned live deployment was unchanged by publishing; this tag
 supersedes all earlier browsing tags for deployment.
 
