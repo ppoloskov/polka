@@ -445,27 +445,64 @@ func (l *Library) sidecarBinary(folder, file, id string) ([]byte, string, bool) 
 	return nil, "", false
 }
 
-// namedImageEntry pulls the entry with the exact given name out of an
-// archive (images/ stores illustrations as <bookid>/<imageid> with no
-// extension), detecting the type by content.
-func namedImageEntry(archivePath, want string) ([]byte, string, bool) {
+// SidecarBinaries collects sidecar payloads for the given FB2 image ids in
+// one pass per sidecar archive: images/<archive>.zip|7z stores stripped
+// <binary> payloads as <bookid>/<imageid>; a still-missing "cover" id falls
+// back to covers/<archive>.zip|7z (entries named by book id). Entries carry
+// no extensions, so the type is detected by content. Ids that are not found
+// in any sidecar are absent from the returned map.
+func (l *Library) SidecarBinaries(folder, file string, ids []string) map[string][]byte {
+	base := strings.TrimSuffix(filepath.Base(folder), filepath.Ext(folder))
+	if base == "" {
+		return nil
+	}
+	want := make(map[string]string, len(ids)) // archive entry name -> fb2 image id
+	for _, id := range ids {
+		want[file+"/"+id] = id
+	}
+	payloads := make(map[string][]byte, len(ids))
+	for _, aext := range []string{".zip", ".7z"} {
+		ap := filepath.Join(l.root, "images", base+aext)
+		// The scan keeps going (the visitor never stops it) and only
+		// collects the payloads we are still waiting for.
+		scanArchive(ap, func(name string, open func() (io.ReadCloser, error)) ([]byte, string, bool) {
+			id, ok := want[name]
+			if !ok {
+				return nil, "", false
+			}
+			rc, err := open()
+			if err != nil {
+				return nil, "", false
+			}
+			defer rc.Close()
+			data, err := io.ReadAll(rc)
+			if err != nil || len(data) == 0 {
+				return nil, "", false
+			}
+			payloads[id] = data
+			delete(want, name)
+			return nil, "", false
+		})
+	}
+	for _, id := range ids {
+		if len(payloads[id]) > 0 {
+			continue
+		}
+		if id == "cover" {
+			if d, _, ok := l.sidecarCover(folder, file); ok {
+				payloads[id] = d
+			}
+		}
+	}
+	return payloads
+}
+
+// scanArchive opens the zip or 7z archive at archivePath and calls match
+// for every entry until match returns ok; that result is returned.
+// Missing or unreadable archives yield ok=false.
+func scanArchive(archivePath string, match func(name string, open func() (io.ReadCloser, error)) ([]byte, string, bool)) ([]byte, string, bool) {
 	if _, err := os.Stat(archivePath); err != nil {
 		return nil, "", false
-	}
-	match := func(name string, open func() (io.ReadCloser, error)) ([]byte, string, bool) {
-		if name != want {
-			return nil, "", false
-		}
-		rc, err := open()
-		if err != nil {
-			return nil, "", false
-		}
-		defer rc.Close()
-		data, err := io.ReadAll(rc)
-		if err != nil || len(data) == 0 {
-			return nil, "", false
-		}
-		return data, sniffImageMime(data), true
 	}
 	if strings.EqualFold(filepath.Ext(archivePath), ".7z") {
 		zr, err := sevenzip.OpenReader(archivePath)
@@ -491,6 +528,27 @@ func namedImageEntry(archivePath, want string) ([]byte, string, bool) {
 		}
 	}
 	return nil, "", false
+}
+
+// namedImageEntry pulls the entry with the exact given name out of an
+// archive (images/ stores illustrations as <bookid>/<imageid> with no
+// extension), detecting the type by content.
+func namedImageEntry(archivePath, want string) ([]byte, string, bool) {
+	return scanArchive(archivePath, func(name string, open func() (io.ReadCloser, error)) ([]byte, string, bool) {
+		if name != want {
+			return nil, "", false
+		}
+		rc, err := open()
+		if err != nil {
+			return nil, "", false
+		}
+		defer rc.Close()
+		data, err := io.ReadAll(rc)
+		if err != nil || len(data) == 0 {
+			return nil, "", false
+		}
+		return data, sniffImageMime(data), true
+	})
 }
 
 // sniffImageMime detects an image MIME from its signature (covers/ stores
@@ -518,10 +576,7 @@ var coverImageMime = map[string]string{
 
 // coverArchiveEntry pulls a cover named <bookid>.<img> out of an archive.
 func coverArchiveEntry(archivePath, bookid string) ([]byte, string, bool) {
-	if _, err := os.Stat(archivePath); err != nil {
-		return nil, "", false
-	}
-	match := func(name string, open func() (io.ReadCloser, error)) ([]byte, string, bool) {
+	return scanArchive(archivePath, func(name string, open func() (io.ReadCloser, error)) ([]byte, string, bool) {
 		// Covers in the covers archive are named by book id, often WITHOUT
 		// an extension (e.g. "294098"), so we detect the type by content.
 		if !strings.EqualFold(strings.TrimSuffix(filepath.Base(name), filepath.Ext(name)), bookid) {
@@ -541,31 +596,7 @@ func coverArchiveEntry(archivePath, bookid string) ([]byte, string, bool) {
 			mime = sniffImageMime(data)
 		}
 		return data, mime, true
-	}
-	if strings.EqualFold(filepath.Ext(archivePath), ".7z") {
-		zr, err := sevenzip.OpenReader(archivePath)
-		if err != nil {
-			return nil, "", false
-		}
-		defer zr.Close()
-		for _, e := range zr.File {
-			if d, m, ok := match(e.Name, e.Open); ok {
-				return d, m, true
-			}
-		}
-		return nil, "", false
-	}
-	zr, err := zip.OpenReader(archivePath)
-	if err != nil {
-		return nil, "", false
-	}
-	defer zr.Close()
-	for _, e := range zr.File {
-		if d, m, ok := match(e.Name, e.Open); ok {
-			return d, m, true
-		}
-	}
-	return nil, "", false
+	})
 }
 
 func (l *Library) extractCover(folder, file, ext string) ([]byte, string, error) {
@@ -664,6 +695,43 @@ func (l *Library) Binary(folder, file, ext, id string) ([]byte, string, error) {
 		return EPUBBinary(bytes.NewReader(raw), int64(len(raw)), id)
 	}
 	return nil, "", ErrNoFile
+}
+
+// CompleteFB2 returns an FB2 with sidecar payloads re-embedded. Flibusta
+// dumps store <binary> payload bytes out of the FB2 files in
+// images/<archive>.zip (entries <bookid>/<imageid>) and covers/<archive>.zip,
+// so downloads would keep unresolved image references for external readers.
+// CompleteFB2 reads the book, scans which referenced ids are embedded and
+// which are missing, pulls the missing ones from the sidecars and re-embeds
+// them. Non-FB2 books, fully embedded books and books whose missing ids are
+// all unresolvable are returned with their exact original bytes. The reader
+// keeps the book opened on disk; the Close method is a no-op.
+func (l *Library) CompleteFB2(folder, file, ext string) (io.ReadCloser, int64, error) {
+	if !strings.EqualFold(ext, "fb2") {
+		return l.Open(folder, file, ext)
+	}
+	rc, _, err := l.Open(folder, file, ext)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, 0, err
+	}
+	missing := fb2MissingBinaries(data)
+	if len(missing) == 0 {
+		return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
+	}
+	payloads := l.SidecarBinaries(folder, file, missing)
+	if len(payloads) == 0 {
+		return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
+	}
+	embedded, err := ReembedBinaries(data, missing, payloads)
+	if err != nil {
+		return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
+	}
+	return io.NopCloser(bytes.NewReader(embedded)), int64(len(embedded)), nil
 }
 
 // Meta extracts FB2 metadata (annotation, publish info) without the cover.

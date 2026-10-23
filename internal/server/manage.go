@@ -293,7 +293,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	used := map[string]int{}
 	for _, book := range books {
 		f := book.file
-		rc, _, err := book.lib.Open(f.Folder, f.File, f.Ext)
+		rc, _, err := book.lib.CompleteFB2(f.Folder, f.File, f.Ext)
 		if err != nil {
 			s.log.Warn("export: skip missing", "book", f.ID, "error", err)
 			continue
