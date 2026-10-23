@@ -118,6 +118,7 @@ func (s *Store) UpdateLibrary(ctx context.Context, id string, name *string, enab
 	if changed == 0 {
 		return ErrNotFound
 	}
+	s.invalidateBookCount()
 	return nil
 }
 
