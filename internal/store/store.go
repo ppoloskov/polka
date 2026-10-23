@@ -18,11 +18,15 @@ type Store struct {
 	db     *sql.DB
 	readDB *sql.DB
 
+	countsInit chan struct{} // closed when the background counts seed finishes
+
 	// genreIDs caches visible per-genre member id lists; dropped whenever
-	// visibility changes (see MaintainCounts / publication).
+	// visibility changes (see MaintainCounts / publication). The generation
+	// counter guards installs raced against a concurrent drop.
 	genreIDs struct {
 		mu    sync.Mutex
 		lists map[string][]int64
+		gen   uint64
 	}
 }
 
@@ -79,11 +83,16 @@ func Open(path string) (*Store, error) {
 	// pool: multiple WAL readers scale, while one reader connection would
 	// serialize every read behind the slowest query and turn concurrent page
 	// loads, cover lookups and updates into a queue (measured ~10x p95
-	// blowout on the real catalog at 8 concurrent requests).
+	// blowout on the real catalog at 8 concurrent requests). Reader handles
+	// carry a smaller page cache (16 MiB): eight connections at the
+	// writer's 64 MiB would tie up half a gigabyte; reads hit different
+	// regions of the file and lean on the OS page cache instead.
 	if strings.Contains(path, ":memory:") {
 		s.readDB = db
 	} else {
-		reader, err := sqlitedrv.Open(path, opts)
+		readerOpts := opts
+		readerOpts.CacheSizeKiB = 16384
+		reader, err := sqlitedrv.Open(path, readerOpts)
 		if err != nil {
 			db.Close()
 			return nil, err
@@ -91,10 +100,20 @@ func Open(path string) (*Store, error) {
 		reader.SetMaxOpenConns(8)
 		s.readDB = reader
 	}
+	// Seed the maintained totals in the background so the first request on
+	// an upgraded database normally finds them ready (they are durable in
+	// meta; later starts early-return). A concurrent read initializes the
+	// same values transactionally instead of writing a stale snapshot back.
+	s.countsInit = make(chan struct{})
+	go func() {
+		defer close(s.countsInit)
+		s.EnsureCountsInitialized(context.Background())
+	}()
 	return s, nil
 }
 
 func (s *Store) Close() error {
+	<-s.countsInit // the seed writes before the connections go away
 	readErr := s.readDB.Close()
 	if s.readDB == s.db {
 		return readErr
@@ -179,29 +198,71 @@ func (s *Store) BookCount(ctx context.Context) (int, error) {
 // the catalog: publication and direct mutations record the exact number in
 // meta (see MaintainCounts), so reads are constant-time even on a 1.6M-row
 // catalog where an inline count measured 1.4-1.7s. A database without the
-// recorded value (first start after the upgrade) computes it once and
-// records it for later reads.
+// recorded value (first start after the upgrade) initializes it once —
+// transactionally, so it can never overwrite totals a concurrent publisher
+// committed later.
 func (s *Store) VisibleBookCount(ctx context.Context) (int, error) {
+	if err := s.EnsureCountsInitialized(ctx); err != nil {
+		return 0, err
+	}
 	if v := s.GetMeta(ctx, metaKeysVisibleCount, ""); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n, nil
 		}
 	}
-	n, err := s.BookCount(ctx)
-	if err != nil {
-		return 0, err
+	return s.BookCount(ctx)
+}
+
+// EnsureCountsInitialized fills the maintained totals (visible book count
+// and per-genre counts) when the database has none yet: publication records
+// them with every commit, but a database upgraded to this code carries no
+// values until the first publication, so the initialization computes them
+// once, transactionally. Concurrent initializers serialize on the writer
+// connection and the loser finds the values present; the compute runs in
+// the same transaction as the write, so a read-snapshot result can never
+// clobber newer totals committed meanwhile. Open starts it in the
+// background so the first request on an upgraded database normally finds
+// the values ready.
+func (s *Store) EnsureCountsInitialized(ctx context.Context) error {
+	if s.metaHoldsCounts(ctx) {
+		return nil
 	}
-	// Best effort: a concurrent publisher records a fresher value anyway.
-	_ = s.SetMeta(ctx, metaKeysVisibleCount, strconv.Itoa(n))
-	return n, nil
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if s.metaHoldsCountsTx(ctx, tx) {
+		return nil
+	}
+	if err := s.maintainCountsTx(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// metaHoldsCounts reports whether both maintained totals are present.
+func (s *Store) metaHoldsCounts(ctx context.Context) bool {
+	var present int
+	err := s.readDB.QueryRowContext(ctx, `
+		SELECT count(*) FROM meta WHERE key IN (?, ?)`,
+		metaKeysVisibleCount, metaKeysGenreCounts).Scan(&present)
+	return err == nil && present >= 2
+}
+
+func (s *Store) metaHoldsCountsTx(ctx context.Context, tx *sql.Tx) bool {
+	var present int
+	err := tx.QueryRowContext(ctx, `
+		SELECT count(*) FROM meta WHERE key IN (?, ?)`,
+		metaKeysVisibleCount, metaKeysGenreCounts).Scan(&present)
+	return err == nil && present >= 2
 }
 
 // MaintainCounts recomputes the visible book total and the per-genre visible
 // book counts and records both in meta so reads stay constant-time. The
-// values ride the publication transaction (maintainCountsTx); direct
-// catalog mutations recompute inline — acceptable for rare admin-paced
-// operations, and required for eager correctness. On a 1.6M-book catalog
-// this costs a couple of seconds of writer time, invisible to readers (WAL).
+// values normally ride the publication transaction (maintainCountsTx); a
+// direct call recomputes standalone. On a 1.6M-book catalog this costs a
+// couple of seconds of writer time, invisible to readers (WAL).
 // Visibility-affecting changes also drop the cached per-genre member lists.
 func (s *Store) MaintainCounts(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)

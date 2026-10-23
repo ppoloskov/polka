@@ -122,21 +122,112 @@ func addLibraryScope(where, alias, libraryID string, args []any) (string, []any)
 	return where + alias + `.library_id = ?`, append(args, libraryID)
 }
 
-// queryBooksByIDs fetches full book rows for the given ids (order is the
-// caller's responsibility; the SQL keeps books in id order for stable
-// pagination when the id list is sorted). Used together with the cached
-// per-genre member lists so page cost is proportional to the page.
-func (s *Store) queryBooksByIDs(ctx context.Context, ids []int64, order string, libraryIDs ...string) ([]Book, error) {
-	if len(ids) == 0 {
-		return nil, nil
+// bumpCountsTx shifts the maintained totals inside the caller's transaction:
+// the visible book count by the given delta and per-genre counts by code.
+// When the totals are not maintained yet, the full computation runs instead
+// — it observes the caller's change because it reads the same transaction.
+// Returns whether the full computation ran.
+func (s *Store) bumpCountsTx(ctx context.Context, tx *sql.Tx, visibleDelta int, genreDeltas map[string]int) (bool, error) {
+	if !s.metaHoldsCountsTx(ctx, tx) {
+		return true, s.maintainCountsTx(ctx, tx)
 	}
-	placeholders := strings.Repeat("?,", len(ids)-1) + "?"
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
+	if visibleDelta != 0 {
+		var value string
+		if err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, metaKeysVisibleCount).Scan(&value); err != nil {
+			return false, err
+		}
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return false, err
+		}
+		if err := setMetaTx(ctx, tx, metaKeysVisibleCount, strconv.Itoa(n+visibleDelta)); err != nil {
+			return false, err
+		}
 	}
-	where, args := addLibraryScope(`b.id IN (`+placeholders+`)`, "b", scopeLibraryID(libraryIDs), args)
-	return s.queryBooks(ctx, where, order, 0, 0, args...)
+	if len(genreDeltas) > 0 {
+		var value string
+		if err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, metaKeysGenreCounts).Scan(&value); err != nil {
+			return false, err
+		}
+		var counts []GenreCount
+		if json.Unmarshal([]byte(value), &counts) != nil {
+			counts = nil
+		}
+		byCode := make(map[string]int, len(counts))
+		for _, g := range counts {
+			byCode[g.Code] = g.Books
+		}
+		for code, delta := range genreDeltas {
+			byCode[code] += delta
+		}
+		merged := make([]GenreCount, 0, len(byCode))
+		for code, books := range byCode {
+			if books > 0 {
+				merged = append(merged, GenreCount{Code: code, Books: books})
+			}
+		}
+		b, err := json.Marshal(merged)
+		if err != nil {
+			return false, err
+		}
+		if err := setMetaTx(ctx, tx, metaKeysGenreCounts, string(b)); err != nil {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+// bookGenreDeltaCodes returns the genre codes a book belongs to (the deltas
+// its visibility change contributes).
+func bookGenreDeltaCodes(ctx context.Context, tx *sql.Tx, bookID int64) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT g.code FROM book_genres bg JOIN genres g ON g.id = bg.genre_id
+		WHERE bg.book_id = ?`, bookID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var codes []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, err
+		}
+		codes = append(codes, c)
+	}
+	return codes, rows.Err()
+}
+
+// libraryBookCountTx counts the live (deleted=0, missing=0) books of one
+// library: the delta a library enable/disable contributes.
+func libraryBookCountTx(ctx context.Context, tx *sql.Tx, libraryID string) (int, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, `
+		SELECT count(*) FROM books b WHERE b.library_id = ? AND b.deleted = 0 AND b.missing = 0`, libraryID).Scan(&n)
+	return n, err
+}
+
+// libraryGenreDeltaTx returns the per-genre deltas a library's availability
+// flip contributes.
+func libraryGenreDeltaTx(ctx context.Context, tx *sql.Tx, libraryID string, dir int, out map[string]int) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT g.code, count(*) FROM book_genres bg
+		JOIN books b ON b.id = bg.book_id AND b.library_id = ? AND b.deleted = 0 AND b.missing = 0
+		JOIN genres g ON g.id = bg.genre_id
+		GROUP BY g.id`, libraryID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var code string
+		var n int
+		if err := rows.Scan(&code, &n); err != nil {
+			return err
+		}
+		out[code] += dir * n
+	}
+	return rows.Err()
 }
 
 func (s *Store) queryBooks(ctx context.Context, where string, order string, limit, offset int, args ...any) ([]Book, error) {
@@ -475,19 +566,22 @@ func (s *Store) ShelfBooks(ctx context.Context, shelfID string, limit, offset in
 		if err != nil {
 			return nil, "", err
 		}
-		// Paginate over the cached visible ids (book order), filtering
-		// again on fetch so a stale list can never surface an unavailable
-		// row. Cost is proportional to the page, not the genre size: a
+		// Paginate over the cached visible ids (book order), re-filtering
+		// on fetch so a stale list can never surface an unavailable row.
+		// Cost is proportional to the page, not the genre size: a
 		// 107k-member genre measured 92-180ms per page when every request
-		// materialized and re-filtered the whole member list.
-		window := ids[offset:]
-		if len(window) > limit+1 {
-			window = window[:limit+1]
-		}
-		if len(window) == 0 {
+		// materialized and re-filtered the whole member list. The offset is
+		// user-supplied and the list can shrink between builds, so the
+		// window is guarded; the store returns exactly limit rows — the
+		// HTTP caller already adds the extra row for its hasMore probe.
+		if offset >= len(ids) {
 			return nil, title, nil
 		}
-		books, err := s.queryBooksByIDs(ctx, window, `b.id`, libraryID)
+		window := ids[offset:]
+		if len(window) > limit {
+			window = window[:limit]
+		}
+		books, err := s.BooksByIDs(ctx, window, libraryID)
 		if err != nil {
 			return nil, "", err
 		}
@@ -504,11 +598,13 @@ func (s *Store) ShelfBooks(ctx context.Context, shelfID string, limit, offset in
 }
 
 // CatalogShelves returns random genre selections for the catalog page.
-// CatalogShelves returns random genre selections for the catalog page.
 // The genre set comes from the maintained per-genre counts (recorded with
-// the catalog) instead of a per-request scan, and each shelf picks a random
-// window inside the genre's member list: a 1.6M-row catalog measured
-// 1.5s-2.8s for the scan-and-sort-everything version (10s+ under load).
+// the catalog) instead of a per-request scan, and each shelf draws random
+// member ids from the cached visible list — preserving the previous SQL
+// random-sampling behavior (uniform choice among live books, smaller
+// genres contributing whatever they have) while a 1.6M-row catalog
+// measured 1.5s-2.8s for the scan-and-sort-everything version (10s+ under
+// load).
 func (s *Store) CatalogShelves(ctx context.Context, count, limit int, libraryIDs ...string) ([]Shelf, error) {
 	libraryID := scopeLibraryID(libraryIDs)
 	counts, err := s.CachedGenresWithCounts(ctx, libraryIDs...)
@@ -550,15 +646,20 @@ func (s *Store) CatalogShelves(ctx context.Context, count, limit int, libraryIDs
 		if len(ids) == 0 {
 			continue
 		}
-		maxOffset := len(ids) - 1
-		if w := len(ids) - limit; w > 0 {
-			maxOffset = w
+		// Random sample without replacement (partial Fisher-Yates); a
+		// smaller genre contributes its whole list, so nothing is dropped
+		// arbitrarily. The sample is displayed by title, as before.
+		window := ids
+		if len(ids) > limit {
+			window = make([]int64, limit)
+			copy(window, ids[:limit])
+			for i := limit; i < len(ids); i++ {
+				if j := rand.Intn(i + 1); j < limit {
+					window[j] = ids[i]
+				}
+			}
 		}
-		window := ids[rand.Intn(maxOffset+1):]
-		if len(window) > limit {
-			window = window[:limit]
-		}
-		books, err := s.queryBooksByIDs(ctx, window, `b.title`, libraryID)
+		books, err := s.BooksByIDs(ctx, window, libraryID)
 		if err != nil {
 			return nil, err
 		}
@@ -609,14 +710,17 @@ func (s *Store) GenresWithCounts(ctx context.Context, libraryIDs ...string) ([]G
 	return out, rows.Err()
 }
 
-// CachedGenresWithCounts serves the maintained per-genre counts (recorded with
-// the catalog, see MaintainCounts); the direct scan is only a fallback
-// for databases without the recorded value, e.g. the first read after the
-// upgrade. Scoped queries (a view of one library) stay direct: they are
-// rare, admin-paced.
+// CachedGenresWithCounts serves the maintained per-genre counts (recorded
+// with the catalog, see MaintainCounts); missing values are initialized
+// transactionally (EnsureCountsInitialized), never written back from a
+// read snapshot that could clobber newer publication totals. Scoped
+// queries (a view of one library) stay direct: they are rare, admin-paced.
 func (s *Store) CachedGenresWithCounts(ctx context.Context, libraryIDs ...string) ([]GenreCount, error) {
 	if libraryID := scopeLibraryID(libraryIDs); libraryID != "" {
 		return s.GenresWithCounts(ctx, libraryID)
+	}
+	if err := s.EnsureCountsInitialized(ctx); err != nil {
+		return nil, err
 	}
 	if v := s.GetMeta(ctx, metaKeysGenreCounts, ""); v != "" {
 		var out []GenreCount
@@ -624,14 +728,7 @@ func (s *Store) CachedGenresWithCounts(ctx context.Context, libraryIDs ...string
 			return out, nil
 		}
 	}
-	out, err := s.GenresWithCounts(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if b, err := json.Marshal(out); err == nil {
-		_ = s.SetMeta(ctx, metaKeysGenreCounts, string(b))
-	}
-	return out, nil
+	return s.GenresWithCounts(ctx)
 }
 
 // genreVisibleIDs returns the visible (live and enabled-library) member ids
@@ -639,58 +736,69 @@ func (s *Store) CachedGenresWithCounts(ctx context.Context, libraryIDs ...string
 // in memory: pagination over a 107k-member genre re-filtered the whole
 // member list on every page, the most expensive request family on the real
 // catalog (~120ms per page, serialized further under load). The cache is
-// dropped whenever visibility can change (maintainCountsTx / direct
-// mutations via MaintainCounts and publication), so pages re-filter live on
-// fetch and a stale list can only affect pagination positions, never what
-// a user sees.
+// dropped whenever visibility can change (maintainCountsTxs / direct
+// mutations via MaintainCounts and publication); a build that overlaps a
+// visibility change must not install its pre-change list after the drop, so
+// installs are guarded by the generation counter (same pattern as the cover
+// cache). Pages re-filter live on fetch: a stale list can shift positions,
+// never what a user sees.
 func (s *Store) genreVisibleIDs(ctx context.Context, genreID int64, libraryID string) ([]int64, error) {
 	key := libraryID + "|" + strconv.FormatInt(genreID, 10)
 	s.genreIDs.mu.Lock()
 	ids, ok := s.genreIDs.lists[key]
+	gen := s.genreIDs.gen
 	s.genreIDs.mu.Unlock()
 	if ok {
 		return ids, nil
 	}
-	where := `b.deleted = 0 AND ` + availableBook
-	args := []any{}
+	scope := ""
+	buildArgs := []any{}
 	if libraryID != "" {
-		where += ` AND b.library_id = ?`
-		args = append(args, libraryID)
+		scope = ` AND b.library_id = ?`
+		buildArgs = append(buildArgs, libraryID)
 	}
 	rows, err := s.readDB.QueryContext(ctx, `
 		SELECT bg.book_id FROM book_genres bg
-		JOIN books b ON b.id = bg.book_id AND `+where+`
+		JOIN books b ON b.id = bg.book_id AND b.deleted = 0 AND `+availableBook+scope+`
 		WHERE bg.genre_id = ?
-		ORDER BY bg.book_id`, append(args, genreID)...)
+		ORDER BY bg.book_id`, append(buildArgs, genreID)...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	fmt.Println("DEBUG genreVisibleIDs", genreID, libraryID, len(ids))
-	ids = make([]int64, 0, 1024)
+	built := make([]int64, 0, 1024)
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		ids = append(ids, id)
+		built = append(built, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	s.genreIDs.mu.Lock()
+	defer s.genreIDs.mu.Unlock()
+	// The read connection's snapshot may predate a publication that
+	// invalidated the cache while this build was running; installing old
+	// ids after the drop would keep them until the next invalidation, so
+	// only installs that observed the current generation are accepted.
+	if s.genreIDs.gen != gen {
+		return built, nil
+	}
 	if s.genreIDs.lists == nil {
 		s.genreIDs.lists = map[string][]int64{}
 	}
-	s.genreIDs.lists[key] = ids
-	s.genreIDs.mu.Unlock()
-	return ids, nil
+	s.genreIDs.lists[key] = built
+	return built, nil
 }
 
-// dropGenreVisibleIDs clears the cached per-genre member lists.
+// dropGenreVisibleIDs clears the cached per-genre member lists and bumps
+// the generation, invalidating builds that started before the change.
 func (s *Store) dropGenreVisibleIDs() {
 	s.genreIDs.mu.Lock()
 	s.genreIDs.lists = nil
+	s.genreIDs.gen++
 	s.genreIDs.mu.Unlock()
 }
 
