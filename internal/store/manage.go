@@ -53,21 +53,23 @@ func (s *Store) AddBook(ctx context.Context, b *BookInput) (int64, error) {
 	// The effective library after addBookTx normalization (a missing
 	// LibraryID defaults to the legacy library).
 	var effectiveLibrary string
-	var genreDeltas map[string]int
 	if err := tx.QueryRowContext(ctx, `SELECT library_id FROM books WHERE id = ?`, id).Scan(&effectiveLibrary); err != nil {
 		return 0, err
 	}
+	// Genre totals count visible memberships only: an upload into a
+	// disabled library contributes nothing, and duplicate codes in the
+	// input map to one stored membership (addBookTx insert-or-ignores the
+	// relation), so the delta must count it once.
 	visibleDelta := 0
+	var genreDeltas map[string]int
 	if enabled, err := libraryEnabledTx(ctx, tx, effectiveLibrary); err != nil {
 		return 0, err
 	} else if enabled {
 		visibleDelta = 1
-	}
-	for _, code := range b.Genres {
-		if genreDeltas == nil {
-			genreDeltas = map[string]int{}
+		genreDeltas = map[string]int{}
+		for _, code := range b.Genres {
+			genreDeltas[code] = 1
 		}
-		genreDeltas[code]++
 	}
 	if _, err := s.bumpCountsTx(ctx, tx, visibleDelta, genreDeltas); err != nil {
 		return 0, err

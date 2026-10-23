@@ -72,3 +72,50 @@ func TestVisibleBookCountCachesAndInvalidates(t *testing.T) {
 		t.Fatalf("exact BookCount = %d, want 1", exact)
 	}
 }
+
+// Review regressions: uploads into a disabled library must not increment
+// genre totals (the book is not visible), and duplicate genre codes in one
+// upload map to a single stored membership — the maintained deltas must
+// match an exact recount in both cases.
+func TestBookCountDeltasMatchVisibility(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "count.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	off, err := st.AddLibrary(ctx, Library{Name: "Off", Kind: "folder", Root: filepath.Join(t.TempDir(), "off")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateLibrary(ctx, off.ID, nil, boolPtr(false)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddBook(ctx, &BookInput{
+		LibraryID: off.ID, Title: "Inactive", Genres: []string{"sf", "sf"},
+		Folder: "f", File: "1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddBook(ctx, &BookInput{
+		Title: "Active", Genres: []string{"sf", "sf"}, Folder: "f", File: "2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := st.CachedGenresWithCounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].Code != "sf" || all[0].Books != 1 {
+		t.Fatalf("maintained genre totals = %+v; want exactly one visible sf membership", all)
+	}
+	exact, err := st.GenresWithCounts(ctx)
+	if err != nil || len(exact) != 1 || exact[0].Books != all[0].Books {
+		t.Fatalf("exact recount = %+v, %v; want to match maintained %+v", exact, err, all)
+	}
+	if n, err := st.VisibleBookCount(ctx); err != nil || n != 1 {
+		t.Fatalf("visible total = %d, %v; want 1", n, err)
+	}
+}
