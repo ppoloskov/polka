@@ -165,3 +165,12 @@ images that fail to load so unresolved references stop showing broken-image
 placeholders; README documents the sidecar layout. Verified in-pod against the
 real dump: `Binary("0")` → 59 KB jpeg, `Binary("1")` → 1.7 KB jpeg,
 `Binary("cover")` → 294 KB jpeg (all 404 before the fix).
+
+Sidecar-format image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-1f8200b`
+resolves to `sha256:65b6b1838427bb2b411875285f6aa0ebeb2c49a092cd87c1f78fac3767dd37b1`
+for Linux/amd64, built from `codex/image-libraries-browsing` commit `1f8200b`
+(browsing stack + PR #21 sidecar images: covers/, images/ trees for
+coverless/stripped Flibusta dumps). Registry digest matched the build metadata.
+Evidence: `/private/tmp/polka-validation/sidecar-image/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+The digest-pinned live deployment was unchanged by publishing.
