@@ -2,6 +2,8 @@ package importer
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -231,5 +233,87 @@ func TestInpxSourceKeyV1Golden(t *testing.T) {
 	const want = "inpx:v1:7c26b7c9400a0995112dd0ecff6339b052abe8f6dc24aa9eb0aa8e36c6f4d23b"
 	if got != want {
 		t.Fatalf("INPX v1 source key = %q, want %q", got, want)
+	}
+}
+
+func TestUpdateInpxStoresPerLibraryProvenanceAndRollsItBackOnPublishFailure(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	libraryID := inpxLibrary(t, st, ctx, "named")
+	source := inpxSource(t, filepath.Join(t.TempDir(), "named-source"), record("Author,One,", "genre", "Named title", "", "", "locator", "fb2"))
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHash := sha256.Sum256(data)
+	_, _, err = UpdateInpx(ctx, nil, st, libraryID, source, t.TempDir(), "", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "library." + libraryID + ".inpx_sha256"
+	if got := st.GetMeta(ctx, key, ""); got != hex.EncodeToString(wantHash[:]) {
+		t.Fatalf("named source hash = %q, want %x", got, wantHash)
+	}
+	if got := st.GetMeta(ctx, "library."+libraryID+".inpx_filename", ""); got != filepath.Base(source) {
+		t.Fatalf("named source filename = %q, want %q", got, filepath.Base(source))
+	}
+	if got := st.GetMeta(ctx, "inpx_sha256", ""); got != "" {
+		t.Fatalf("named source overwrote legacy hash alias: %q", got)
+	}
+	lib, err := st.Library(ctx, libraryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	absSource, err := filepath.Abs(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lib.SourcePath != absSource {
+		t.Fatalf("named source path = %q, want absolute %q", lib.SourcePath, absSource)
+	}
+	priorSourcePath := lib.SourcePath
+	var priorHighwater string
+	if err := st.DB().QueryRow(`SELECT value FROM meta WHERE key='book_id_high_water'`).Scan(&priorHighwater); err != nil {
+		t.Fatal(err)
+	}
+
+	failed := inpxSource(t, filepath.Join(t.TempDir(), "failed-source"), record("Author,One,", "genre", "Must roll back", "", "", "new-locator", "fb2"))
+	if _, err := st.DB().Exec(`CREATE TRIGGER reject_source_path BEFORE UPDATE OF source_path ON libraries BEGIN SELECT RAISE(ABORT, 'source path rejected'); END`); err != nil {
+		t.Fatal(err)
+	}
+	snap, info, err := StageInpxWithInfo(ctx, failed, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap.SetInpxSource(filepath.Base(failed), info.SHA256, info.CollectionName, failed, false)
+	_, err = st.PublishLibrary(ctx, libraryID, snap, false)
+	snap.Close()
+	if err == nil {
+		t.Fatal("publish unexpectedly succeeded despite source-path trigger")
+	}
+	var books int
+	if err := st.DB().QueryRow(`SELECT count(*) FROM books WHERE library_id=?`, libraryID).Scan(&books); err != nil {
+		t.Fatal(err)
+	}
+	if books != 1 {
+		t.Fatalf("books after failed publish = %d, want 1", books)
+	}
+	if got := st.GetMeta(ctx, key, ""); got != hex.EncodeToString(wantHash[:]) {
+		t.Fatalf("named source hash after failed publish = %q, want prior %x", got, wantHash)
+	}
+	lib, err = st.Library(ctx, libraryID)
+	if err != nil || lib.SourcePath != priorSourcePath {
+		t.Fatalf("source path after failed publish = %+v, %v; want %q", lib, err, priorSourcePath)
+	}
+	var highwater string
+	if err := st.DB().QueryRow(`SELECT value FROM meta WHERE key='book_id_high_water'`).Scan(&highwater); err != nil {
+		t.Fatal(err)
+	}
+	if highwater != priorHighwater {
+		t.Fatalf("book ID high-water after failed publish = %q, want %q", highwater, priorHighwater)
 	}
 }

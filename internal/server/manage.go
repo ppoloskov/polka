@@ -426,7 +426,7 @@ func (s *Server) handleImportInpx(w http.ResponseWriter, r *http.Request) {
 	}
 
 	replace := r.FormValue("replace") == "1"
-	if n, err := s.st.BookCount(r.Context()); err != nil {
+	if n, err := s.st.LibraryBookCount(r.Context(), "legacy"); err != nil {
 		fail(http.StatusInternalServerError, err.Error())
 		return
 	} else if n > 0 && !replace {
@@ -442,13 +442,13 @@ func (s *Server) handleImportInpx(w http.ResponseWriter, r *http.Request) {
 			fail(http.StatusBadRequest, "inpx path not found on the server")
 			return
 		}
-		go s.runImport(serverPath, replace, false)
+		go s.runImport(serverPath, "", false)
 		writeJSON(w, map[string]any{"started": true})
 		return
 	}
 
 	// Upload mode: the inpx is sent as a multipart file.
-	file, _, err := r.FormFile("file")
+	file, header, err := r.FormFile("file")
 	if err != nil {
 		fail(http.StatusBadRequest, "inpx file or server path is required")
 		return
@@ -468,11 +468,11 @@ func (s *Server) handleImportInpx(w http.ResponseWriter, r *http.Request) {
 	}
 	tmp.Close()
 
-	go s.runImport(tmp.Name(), replace, true)
+	go s.runImport(tmp.Name(), header.Filename, true)
 	writeJSON(w, map[string]any{"started": true})
 }
 
-func (s *Server) runImport(inpxPath string, replace bool, cleanup bool) {
+func (s *Server) runImport(inpxPath, sourceName string, cleanup bool) {
 	if cleanup {
 		defer os.Remove(inpxPath) // remove the uploaded temp copy, not a server path
 	}
@@ -502,15 +502,10 @@ func (s *Server) runImport(inpxPath string, replace bool, cleanup bool) {
 		s.log.Info("web import done", "books", stats.Books, "duration", stats.Duration)
 	}
 
-	if replace {
-		setPhase("clearing", 0)
-		if err := s.st.Clear(ctx); err != nil {
-			finish(store.ImportStats{}, err)
-			return
-		}
+	_, stats, err := importer.UpdateInpx(ctx, s.log, s.st, "legacy", inpxPath, s.cfg.DataDir, sourceName, setPhase, false)
+	if err == nil && s.lib != nil {
+		s.lib.ResetCovers()
 	}
-
-	stats, err := importer.ImportInpx(ctx, s.log, s.st, inpxPath, setPhase)
 	finish(stats, err)
 	if err == nil {
 		s.warnIfArchivesMissing(ctx)

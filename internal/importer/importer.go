@@ -4,7 +4,16 @@ package importer
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/vestigiumincaligne/polka/internal/inpx"
 	"github.com/vestigiumincaligne/polka/internal/store"
@@ -13,54 +22,154 @@ import (
 // Progress reports import progress: phase is "loading" or "indexing".
 type Progress func(phase string, processed int)
 
-// ImportInpx loads an inpx catalog into an empty database.
+// ImportInpx preserves the legacy import API while applying the source as a
+// complete replacement of the default library.
 func ImportInpx(ctx context.Context, log *slog.Logger, st *store.Store, path string, onProgress Progress) (store.ImportStats, error) {
-	var stats store.ImportStats
-
-	f, err := inpx.Open(path)
+	count, err := st.LibraryBookCount(ctx, "legacy")
 	if err != nil {
-		return stats, err
+		return store.ImportStats{}, err
 	}
-	defer f.Close()
+	if count > 0 {
+		return store.ImportStats{}, fmt.Errorf("library is not empty (%d books); use --replace to reimport", count)
+	}
+	_, stats, err := UpdateInpx(ctx, log, st, "legacy", path, "", "", onProgress, false)
+	return stats, err
+}
 
-	if name := f.CollectionName(); name != "" {
-		if err := st.SetMeta(ctx, "collection_name", name); err != nil {
-			return stats, err
+// UpdateInpx stages and atomically publishes one INPX source into libraryID.
+// A non-empty sourceName identifies an uploaded file; its verified bytes are
+// retained under a content-addressed name before catalog publication.
+func UpdateInpx(ctx context.Context, log *slog.Logger, st *store.Store, libraryID, path, dataDir, sourceName string, onProgress Progress, allowEmpty bool) (store.UpdateStats, store.ImportStats, error) {
+	started := time.Now()
+	snapshot, info, err := StageInpxWithInfo(ctx, path, dataDir, onProgress)
+	if err != nil {
+		return store.UpdateStats{}, store.ImportStats{}, err
+	}
+	defer snapshot.Close()
+	if info.Stats.Books == 0 && !allowEmpty {
+		return store.UpdateStats{}, store.ImportStats{}, errors.New("empty library snapshot is not allowed")
+	}
+	filenameSource := sourceName
+	if filenameSource == "" {
+		filenameSource = path
+	}
+	filename := filepath.Base(strings.ReplaceAll(filenameSource, "\\", "/"))
+	sourcePath, err := filepath.Abs(path)
+	if err != nil {
+		return store.UpdateStats{}, store.ImportStats{}, err
+	}
+	if sourceName != "" {
+		sourcePath, err = saveInpxSource(path, dataDir, info.SHA256)
+		if err != nil {
+			return store.UpdateStats{}, store.ImportStats{}, err
 		}
-		log.Info("collection", "name", name)
 	}
-
-	session, err := st.NewImport(ctx)
+	snapshot.SetInpxSource(filename, info.SHA256, info.CollectionName, sourcePath, libraryID == "legacy")
+	if info.CollectionName != "" && log != nil {
+		log.Info("collection", "name", info.CollectionName)
+	}
+	if onProgress != nil {
+		onProgress("indexing", info.Stats.Books)
+	}
+	updated, err := st.PublishLibrary(ctx, libraryID, snapshot, allowEmpty)
 	if err != nil {
-		return stats, err
+		return store.UpdateStats{}, store.ImportStats{}, err
 	}
-	defer session.Abort()
+	info.Stats.Duration = time.Since(started)
+	if log != nil {
+		log.Info("import done", "books", info.Stats.Books, "duration", info.Stats.Duration.Round(time.Millisecond))
+	}
+	return updated, info.Stats, nil
+}
 
-	processed := 0
-	err = f.Records(func(rec *inpx.Record) error {
-		if err := ctx.Err(); err != nil {
+func saveInpxSource(path, dataDir, expectedHash string) (string, error) {
+	absoluteDataDir, err := filepath.Abs(dataDir)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(absoluteDataDir, "sources")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(dir, ".inpx-*.tmp")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	input, err := os.Open(path)
+	if err != nil {
+		tmp.Close()
+		return "", err
+	}
+	digest := sha256.New()
+	_, copyErr := io.Copy(io.MultiWriter(tmp, digest), input)
+	closeInputErr := input.Close()
+	if copyErr == nil {
+		copyErr = closeInputErr
+	}
+	if copyErr != nil {
+		tmp.Close()
+		return "", copyErr
+	}
+	if got := hex.EncodeToString(digest.Sum(nil)); got != expectedHash {
+		tmp.Close()
+		return "", fmt.Errorf("uploaded INPX changed after staging")
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	destination := filepath.Join(dir, expectedHash+".inpx")
+	verifyExisting := func() error {
+		existing, err := os.Open(destination)
+		if err != nil {
 			return err
 		}
-		if err := session.Add(toBookInput(rec)); err != nil {
-			return err
+		existingHash := sha256.New()
+		_, copyErr := io.Copy(existingHash, existing)
+		closeErr := existing.Close()
+		if copyErr == nil {
+			copyErr = closeErr
 		}
-		if processed++; processed%50_000 == 0 {
-			log.Info("importing", "books", processed)
+		if copyErr != nil {
+			return copyErr
 		}
-		if onProgress != nil && processed%5_000 == 0 {
-			onProgress("loading", processed)
+		if hex.EncodeToString(existingHash.Sum(nil)) != expectedHash {
+			return fmt.Errorf("content-addressed INPX source is invalid: %s", destination)
 		}
 		return nil
-	})
+	}
+	if _, err := os.Stat(destination); err == nil {
+		if err := verifyExisting(); err != nil {
+			return "", err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	} else if err := os.Rename(tmpPath, destination); err != nil {
+		if _, statErr := os.Stat(destination); statErr != nil {
+			return "", err
+		}
+		if verifyErr := verifyExisting(); verifyErr != nil {
+			return "", verifyErr
+		}
+	}
+	d, err := os.Open(dir)
 	if err != nil {
-		return stats, err
+		return "", err
 	}
-
-	log.Info("building indexes and search index", "books", processed)
-	if onProgress != nil {
-		onProgress("indexing", processed)
+	syncErr := d.Sync()
+	closeErr := d.Close()
+	if syncErr != nil {
+		return "", syncErr
 	}
-	return session.Finish()
+	if closeErr != nil {
+		return "", closeErr
+	}
+	return destination, nil
 }
 
 func toBookInput(rec *inpx.Record) *store.BookInput {

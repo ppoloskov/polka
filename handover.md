@@ -75,3 +75,12 @@ before its commit; exclude those paths from the folder commit.
 Known legacy limit: lost/reused historical IDs and IDs retained only by offline
 clients cannot be reconstructed. Guarantee forward allocation safety from the
 known persisted migration boundary; do not expand sync protocols to claim repair.
+
+Current delivery: PRs #1–#5 are open and unmerged. Folder commit `4581178`
+passed full Go tests/vet/both builds from an isolated archive; PR #6 is being
+published. Legacy import adapters are reviewed and ready for a separate commit
+and native upgrade verification. They preserve the DB on failure, retain verified
+uploaded indexes, commit source provenance atomically, and reset cover caches.
+Explicit successful replacement conservatively retires unknown legacy catalog
+rows without reassigning their personal references; hashed uploads remain.
+Management API work is pending in separate files; never stage it with adapters.

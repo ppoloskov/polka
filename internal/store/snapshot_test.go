@@ -191,6 +191,34 @@ func TestPublishLibraryKeepsSourceIdentityScopedAndStable(t *testing.T) {
 	}
 }
 
+func TestPublishLibraryCountsUnknownLegacyRowsRemovedButPreservesUploads(t *testing.T) {
+	st, ctx := snapshotStore(t)
+	unknownID, err := st.AddBook(ctx, &BookInput{Title: "Unknown legacy", Folder: "old", File: "unknown.fb2", Ext: "fb2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploadID, err := st.AddBook(ctx, &BookInput{Title: "Uploaded book", Folder: "uploads", File: "upload.fb2", Ext: "fb2", FileHash: "upload-hash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := newTestSnapshot(t, ctx, snapshotEntry("inpx:record", "Catalog book"))
+	snap.SetInpxSource("catalog.inpx", "fingerprint", "collection", "/catalog.inpx", true)
+	stats, err := st.PublishLibrary(ctx, "legacy", snap, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Removed != 1 {
+		t.Fatalf("removed count = %d, want 1 unknown legacy row", stats.Removed)
+	}
+	var missing int
+	if err := st.DB().QueryRow(`SELECT missing FROM books WHERE id=?`, unknownID).Scan(&missing); err != nil || missing != 1 {
+		t.Fatalf("unknown legacy row missing = %d, %v; want 1", missing, err)
+	}
+	if err := st.DB().QueryRow(`SELECT missing FROM books WHERE id=?`, uploadID).Scan(&missing); err != nil || missing != 0 {
+		t.Fatalf("uploaded row missing = %d, %v; want 0", missing, err)
+	}
+}
+
 func TestPublishLibraryRejectsInvalidSnapshotsWithoutChangingPublishedState(t *testing.T) {
 	st, ctx := snapshotStore(t)
 	libraryID := snapshotLibrary(t, st, ctx, "atomic")
