@@ -240,7 +240,7 @@ const BookListPage = ({ kind, selectedLibraryId = "" }) => {
                   />
                 ))}
               </div>}
-          {kind === "shelf" && hasMore && (
+          {(kind === "shelf" || kind === "author") && hasMore && (
             <div style={{ display: "flex", justifyContent: "center", marginTop: 20 }}>
               <button type="button" className="btn btn-primary" onClick={loadMore} disabled={loadingMore}>
                 {loadingMore ? t("loading") : t("lists.more")}

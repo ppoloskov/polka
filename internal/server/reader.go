@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/net/html"
+
 	"github.com/vestigiumincaligne/polka/internal/auth"
 	"github.com/vestigiumincaligne/polka/internal/library"
 )
@@ -236,26 +238,43 @@ func (s *Server) handleReadSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"matches": matches, "total": total})
 }
 
-// chapterPlainText strips tags and decodes the few entities the converter
-// emits, returning usable text plus its lowercase form for searching.
-func chapterPlainText(html string) (text, lower string) {
-	var sb strings.Builder
-	sb.Grow(len(html))
-	for i := 0; i < len(html); {
-		if html[i] == '<' {
-			if j := strings.IndexByte(html[i:], '>'); j >= 0 {
-				i += j + 1
-				sb.WriteByte(' ')
-				continue
-			}
-			break
-		}
-		sb.WriteByte(html[i])
-		i++
+// chapterPlainText strips the chapter markup and decodes entities via the
+// standard HTML tokenizer (golang.org/x/net/html), returning usable text
+// plus its lowercase form for searching. Inline elements (<em>…) join the
+// surrounding words; block-level elements emit a separator so neighbouring
+// paragraphs cannot merge into one token.
+func chapterPlainText(htmlStr string) (text, lower string) {
+	doc, err := html.Parse(strings.NewReader(htmlStr))
+	if err != nil {
+		return "", ""
 	}
+	var sb strings.Builder
+	inline := map[string]bool{"em": true, "strong": true, "a": true, "i": true, "b": true, "u": true, "s": true, "small": true, "sub": true, "sup": true, "span": true}
+	var walk func(*html.Node)
+	separate := func(n *html.Node) { sb.WriteByte(' ') }
+	walk = func(n *html.Node) {
+		if n.Type == html.TextNode {
+			sb.WriteString(n.Data)
+			return
+		}
+		if n.Type != html.ElementNode {
+			for c := n.FirstChild; c != nil; c = c.NextSibling {
+				walk(c)
+			}
+			return
+		}
+		if !inline[n.Data] { // block-level: separate from the surrounding text
+			separate(n)
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+		if !inline[n.Data] {
+			separate(n)
+		}
+	}
+	walk(doc)
 	text = strings.Join(strings.Fields(sb.String()), " ")
-	replacer := strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", `"`, "&#39;", "'", "&nbsp;", " ")
-	text = replacer.Replace(text)
 	return text, strings.ToLower(text)
 }
 

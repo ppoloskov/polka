@@ -253,13 +253,16 @@ func (s *Store) SetBookDeleted(ctx context.Context, bookID int64, deleted bool) 
 		if codes, err := bookGenreDeltaCodes(ctx, tx, bookID); err != nil {
 			return err
 		} else {
+			// One adjustment per genre code, accumulated across the book's
+			// whole genre set (recreating the map per code would keep only
+			// the last genre's delta).
+			libraryGenreDeltas = map[string]int{}
+			if wasVisible != isVisible {
+				genreDeltas = map[string]int{}
+			}
 			for _, code := range codes {
-				libraryGenreDeltas = map[string]int{}
 				libraryGenreDeltas[code] += liveDelta
 				if wasVisible != isVisible {
-					if genreDeltas == nil {
-						genreDeltas = map[string]int{}
-					}
 					genreDeltas[code] += visibleDelta
 				}
 			}
@@ -326,6 +329,30 @@ func (s *Store) Clear(ctx context.Context) error {
 	}
 	if err := setMetaTx(ctx, tx, metaKeysGenreCounts, "[]"); err != nil {
 		return err
+	}
+	// Every library's scoped genre list resets with the catalog: stale
+	// per-library totals would survive a Clear otherwise.
+	libRows, err := tx.QueryContext(ctx, `SELECT id FROM libraries`)
+	if err != nil {
+		return err
+	}
+	var libraryIDs []string
+	for libRows.Next() {
+		var id string
+		if err := libRows.Scan(&id); err != nil {
+			libRows.Close()
+			return err
+		}
+		libraryIDs = append(libraryIDs, id)
+	}
+	libRows.Close()
+	if err := libRows.Err(); err != nil {
+		return err
+	}
+	for _, id := range libraryIDs {
+		if err := setMetaTx(ctx, tx, libraryGenreCountsKey(id), "[]"); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err

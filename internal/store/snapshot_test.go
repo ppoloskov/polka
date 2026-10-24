@@ -911,3 +911,31 @@ func TestGenreShelfCacheFollowsVisibilityChanges(t *testing.T) {
 		}
 	}
 }
+
+// Publication refreshes the publishing library's scoped genre list: after a
+// key disappears from the source, its scoped count must reset to empty.
+func TestPublishLibraryRefreshesScopedGenreCounts(t *testing.T) {
+	st, ctx := snapshotStore(t)
+	libraryID := snapshotLibrary(t, st, ctx, "scoped")
+
+	entry := snapshotEntry("inpx:v1:key", "Scoped genre book")
+	entry.book.Genres = []string{"sf"}
+	if err := publishTestSnapshot(t, st, ctx, libraryID, entry); err != nil {
+		t.Fatal(err)
+	}
+	scoped, err := st.CachedGenresForLibrary(ctx, libraryID)
+	if err != nil || len(scoped) != 1 || scoped[0].Code != "sf" {
+		t.Fatalf("scoped totals after publish = %+v, %v; want sf", scoped, err)
+	}
+
+	// A replacement without the key sweeps the book to missing.
+	other := snapshotEntry("inpx:v1:key2", "Other book")
+	other.book.Genres = []string{"history"}
+	if err := publishTestSnapshot(t, st, ctx, libraryID, other); err != nil {
+		t.Fatal(err)
+	}
+	scoped, err = st.CachedGenresForLibrary(ctx, libraryID)
+	if err != nil || len(scoped) != 1 || scoped[0].Code != "history" {
+		t.Fatalf("scoped totals after republish = %+v, %v; want history only", scoped, err)
+	}
+}

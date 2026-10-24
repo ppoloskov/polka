@@ -837,20 +837,18 @@ func (s *Store) CachedGenresWithCounts(ctx context.Context, libraryIDs ...string
 	return s.GenresWithCounts(ctx)
 }
 
-// CachedGenresForLibrary serves the maintained per-genre list of one library
-// (the scoped genre search): an unavailable library has no scoped list by
-// the availability filter, matching the direct scan. Missing lists are
+// CachedGenresForLibrary serves the maintained per-genre list of one
+// library: the library's live membership (deleted=0, missing=0) regardless
+// of availability — deleting an invisible book must still update it, and
+// re-enabling a library must not resurrect a stale list. Missing lists are
 // computed once transactionally (not written back from read snapshots).
 func (s *Store) CachedGenresForLibrary(ctx context.Context, libraryID string) ([]GenreCount, error) {
-	var enabled int
-	err := s.readDB.QueryRowContext(ctx, `SELECT enabled FROM libraries WHERE id = ?`, libraryID).Scan(&enabled)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
+	var exists int
+	err := s.readDB.QueryRowContext(ctx, `SELECT count(*) FROM libraries WHERE id = ?`, libraryID).Scan(&exists)
 	if err != nil {
 		return nil, err
 	}
-	if enabled != 1 {
+	if exists == 0 {
 		return nil, nil
 	}
 	if v := s.GetMeta(ctx, libraryGenreCountsKey(libraryID), ""); v != "" {
