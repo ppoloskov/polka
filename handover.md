@@ -143,3 +143,37 @@ zero pod restarts, zero ERROR lines, home page ~100µs. Two earlier attempts
 restart; orphaned snapshot staging dirs were removed afterwards. The catalog
 now carries inpx:v2 group keys throughout, so routine updates are exact-key
 matches with no consolidation.
+
+Reader experience delivery on PR #23 (`8bcdbc4`, branch `codex/reader-experience`,
+based on #22):
+- P0 typography: Literata, PT Serif and Noto Serif bundled locally
+  (fontsource packages, cyrillic+latin subsets, no CDN), justification,
+  language-tagged automatic hyphenation (read-meta carries the book
+  language and the reader container sets `lang`), first-line indent and a
+  paragraph-spacing scale; all persist through the reader-prefs API.
+- P1 navigation: in-book search (`GET /api/v1/read/{id}/search`, chapter
+  matches with counts and snippets, in-chapter `<mark>` highlighting on
+  jump), reading bookmarks in users.db (CRUD at
+  `/api/v1/read/{id}/bookmarks`, same-spot saves update, localStorage
+  fallback in public mode) with a 26ab button and a panel tab, and a seekable
+  progress bar weighted by per-chapter rendered sizes (read-meta also
+  carries chapter sizes).
+- Sync-mode desktop readers keep their existing routes; the new endpoints
+  are server-mode only.
+
+Session-discipline incident (recorded per the review trust contract):
+several shell commands ran without an explicit workdir and executed in the
+PRIMARY checkout (`/Users/paul/projects/polka`), receiving stray writes
+(prettier rewraps of fetchBooks/reader/ReaderPage, round-3 i18n keys,
+fontsource deps in web/package.json + lock, one reader.js append) followed
+by an erroneous multi-file `git checkout` revert. Recovery: reverted files
+were reconstructed to their as-found state (ReaderPage.jsx/i18n/reader.js/
+fetchBooks restored, SearchPage.jsx user list-view feature rebuilt from the
+captured diff, package files restored via npm install); the primary's own
+web test suite passes (34 tests / 8 files) and its dist rebuilds. Residual:
+the primary dist content hash differs from its pre-incident build
+(B4HNniqO vs C4L1KZe8) without an identified content difference 2014 all user
+features verified present (BookCard author links, BookListPage list-view
+and grouping, SearchPage views); the as-found bundle bytes were lost to a
+dist rebuild before comparison. RULE: every command in cross-repo sessions
+must set workdir explicitly; never rely on sticky cwd.
