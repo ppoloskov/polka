@@ -1,17 +1,22 @@
 import { captureFB2Position, restoreFB2Position, matchingFB2Progress } from "./fb2Position";
 import { t } from "../i18n";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   fetchChapter,
   fetchProgress,
   fetchReaderPrefs,
   fetchReadMeta,
+  fetchReadSearch,
+  fetchBookmarks,
+  addBookmark as apiAddBookmark,
+  deleteBookmark as apiDeleteBookmark,
   localProgress,
   saveProgress,
   saveFB2Progress,
   saveReaderPrefs,
 } from "../api/reader";
+import "../readerFonts";
 import "./ReaderPage.css";
 
 // PDF and EPUB engines are heavy — load them only when such a file is opened.
@@ -20,7 +25,24 @@ const PdfReader = lazy(() => import("./PdfReader"));
 const FONT_SIZES = [17, 19, 21, 24];
 const LINE_HEIGHTS = [1.5, 1.72, 1.95];
 const MEASURES = ["540px", "640px", "760px"];
-const DEFAULT_PREFS = { fontStep: 1, theme: "paper", font: "serif", lineStep: 1, widthStep: 1 };
+const DEFAULT_PREFS = {
+  fontStep: 1,
+  theme: "paper",
+  font: "serif",
+  lineStep: 1,
+  widthStep: 1,
+  align: "left",
+  hyphens: false,
+  indent: false,
+  spaceStep: 1,
+};
+const BOOK_FONTS = () => [
+  { id: "serif", label: t("reader.serif"), css: "georgia, serif" },
+  { id: "literata", label: "Literata", css: "'Literata', georgia, serif" },
+  { id: "ptserif", label: "PT Serif", css: "'PT Serif', georgia, serif" },
+  { id: "noto", label: "Noto Serif", css: "'Noto Serif', georgia, serif" },
+  { id: "sans", label: t("reader.sans"), css: "" },
+];
 const THEMES = () => [
   { id: "paper", label: t("reader.theme.paper") },
   { id: "sepia", label: t("reader.theme.sepia") },
@@ -38,6 +60,53 @@ const loadPrefs = () => {
 const chapterLabel = (meta, index) =>
   meta?.chapters?.[index]?.title || (index === 0 ? t("reader.start") : t("reader.chapterN", { n: index + 1 }));
 
+// highlightChapter wraps case-insensitive occurrences of query in the
+// chapter DOM with <mark class="reader__hl">; returns the match count.
+// The chapter elements come from dangerouslySetInnerHTML, so direct DOM
+// edits are safe between renders; re-runs are idempotent (marked nodes are
+// skipped by the walker).
+const highlightChapter = (el, query) => {
+  const lower = query.toLowerCase();
+  if (!el || !lower) return 0;
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) =>
+      n.parentElement?.closest("mark.reader__hl")
+        ? NodeFilter.FILTER_REJECT
+        : n.nodeValue.toLowerCase().includes(lower)
+          ? NodeFilter.FILTER_ACCEPT
+          : NodeFilter.FILTER_REJECT,
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  let count = 0;
+  for (const node of nodes) {
+    const text = node.nodeValue;
+    const low = text.toLowerCase();
+    const frag = document.createDocumentFragment();
+    let pos = 0;
+    let at = low.indexOf(lower);
+    while (at >= 0) {
+      count++;
+      if (at > pos) frag.appendChild(document.createTextNode(text.slice(pos, at)));
+      const mark = document.createElement("mark");
+      mark.className = "reader__hl";
+      mark.textContent = text.slice(at, at + lower.length);
+      frag.appendChild(mark);
+      pos = at + lower.length;
+      at = low.indexOf(lower, pos);
+    }
+    frag.appendChild(document.createTextNode(text.slice(pos)));
+    node.parentNode.replaceChild(frag, node);
+  }
+  return count;
+};
+
+const unwrapMarks = (el) => {
+  for (const mark of el?.querySelectorAll("mark.reader__hl") ?? []) {
+    mark.replaceWith(document.createTextNode(mark.textContent));
+  }
+};
+
 const ReaderPage = () => {
   const { bookId } = useParams();
 
@@ -52,6 +121,19 @@ const ReaderPage = () => {
   const [prefs, setPrefs] = useState(loadPrefs);
   const [immersive, setImmersive] = useState(false);
   const prefsSynced = useRef(false); // server prefs are authoritative once loaded
+
+  // In-book search and bookmarks (the side panel).
+  const [panelTab, setPanelTab] = useState("chapters"); // chapters | bookmarks
+  const [panelSearch, setPanelSearch] = useState("");
+  const [panelSearchResults, setPanelSearchResults] = useState(null); // matches for panelSearch
+  const [panelSearching, setPanelSearching] = useState(false);
+  const [highlightQuery, setHighlightQuery] = useState(""); // committed query highlighted in loaded chapters
+  const [highlightCount, setHighlightCount] = useState(0);
+  const panelSearchTimer = useRef(null);
+  const [bookmarks, setBookmarks] = useState([]);
+
+  // Seekable progress bar; null while not dragging.
+  const [seekDraft, setSeekDraft] = useState(null);
 
   const [remoteProgress, setRemoteProgress] = useState(null);
   const revision = useRef(0);
@@ -322,27 +404,151 @@ const ReaderPage = () => {
 
   // --- Navigate to a chapter (TOC, keyboard) ---
   const goTo = useCallback(
-    (n) => {
+    (n, ratio = 0) => {
       if (!meta || n < 0 || n >= total) return;
       setTocOpen(false);
       setNote(null);
       const already = pageRef.current?.querySelector(`[data-chapter="${n}"]`);
       if (already) {
-        window.scrollTo({ top: already.offsetTop - 60, behavior: "smooth" });
+        const top = already.offsetTop + (ratio > 0 ? ratio * already.offsetHeight - 60 : -60);
+        window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+        setCurrent({ index: n, ratio });
         return;
       }
       fetchChapter(bookId, n)
         .then((ch) => {
           clearTimeout(saveTimer.current);
-          restoreTo.current = { index: n, ratio: 0, save: true };
+          restoreTo.current = { index: n, ratio, save: true };
           setLoaded([ch]);
-          setCurrent({ index: n, ratio: 0 });
+          setCurrent({ index: n, ratio });
           interacted.current = true;
         })
         .catch(() => {});
     },
     [bookId, meta, total, persist]
   );
+
+  // --- Side panel: in-book search and bookmarks ---
+
+  const refreshBookmarks = useCallback(() => {
+    if (serverStored.current) {
+      fetchBookmarks(bookId)
+        .then((list) => setBookmarks(list ?? []))
+        .catch(() => setBookmarks([]));
+    } else {
+      try {
+        setBookmarks(JSON.parse(localStorage.getItem(`polka-bookmarks:${bookId}`) ?? "[]"));
+      } catch {
+        setBookmarks([]);
+      }
+    }
+  }, [bookId]);
+
+  // Public mode keeps bookmarks in localStorage (same fallback as progress).
+  useEffect(() => {
+    if (tocOpen) refreshBookmarks();
+  }, [tocOpen, refreshBookmarks]);
+
+  const addHereBookmark = () => {
+    const entry = {
+      chapter: current.index,
+      position: current.ratio,
+      locator: captureFB2Position(pageRef.current)?.locator ?? "",
+      label: chapterLabel(meta, current.index),
+    };
+    if (serverStored.current) {
+      apiAddBookmark(bookId, entry)
+        .then((saved) => {
+          setBookmarks((prev) =>
+            [...prev.filter((b) => b.id !== saved.id), saved].sort((a, b) => a.chapter - b.chapter || a.position - b.position),
+          );
+        })
+        .catch(() => {});
+    } else {
+      const next = [...bookmarks, { ...entry, id: Date.now() }].sort(
+        (a, b) => a.chapter - b.chapter || a.position - b.position,
+      );
+      setBookmarks(next);
+      try {
+        localStorage.setItem(`polka-bookmarks:${bookId}`, JSON.stringify(next));
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
+  const removeBookmark = (id) => {
+    if (serverStored.current) apiDeleteBookmark(bookId, id).catch(() => {});
+    const next = bookmarks.filter((b) => b.id !== id);
+    setBookmarks(next);
+    if (!serverStored.current) {
+      try {
+        localStorage.setItem(`polka-bookmarks:${bookId}`, JSON.stringify(next));
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
+  const commitPanelSearch = useCallback(
+    (q) => {
+      q = q.trim();
+      if (q.length < 2) {
+        setPanelSearchResults(null);
+        setPanelSearching(false);
+        return;
+      }
+      setPanelSearching(true);
+      fetchReadSearch(bookId, q)
+        .then((res) => setPanelSearchResults(res?.matches ?? []))
+        .catch(() => setPanelSearchResults([]))
+        .finally(() => setPanelSearching(false));
+    },
+    [bookId],
+  );
+
+  const onPanelSearch = (e) => {
+    const q = e.target.value;
+    setPanelSearch(q);
+    clearTimeout(panelSearchTimer.current);
+    panelSearchTimer.current = setTimeout(() => commitPanelSearch(q), 350);
+  };
+
+  // Clearing the panel query un-highlights the rendered chapters.
+  useEffect(() => {
+    if (panelSearch.trim().length < 2 && highlightQuery) setHighlightQuery("");
+  }, [panelSearch, highlightQuery]);
+
+  // Highlight the committed query in every loaded chapter (fired per load so
+  // appended chapters get theirs too; unwrapped whenever the query clears).
+  const jumpAndHighlight = (match) => {
+    setHighlightQuery(panelSearch.trim());
+    goTo(match.index, 0);
+  };
+
+  useEffect(() => {
+    if (loaded.length === 0) return;
+    const q = highlightQuery.trim();
+    if (!q) {
+      unwrapMarks(pageRef.current);
+      setHighlightCount(0);
+      return;
+    }
+    let count = 0;
+    for (const el of pageRef.current?.querySelectorAll("[data-chapter]") ?? []) {
+      count += highlightChapter(el, q);
+    }
+    setHighlightCount(count);
+    // highlightQuery drives the marks; loaded changes re-run for appends.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, highlightQuery]);
+
+  const commitSeek = () => {
+    if (seekDraft == null) return;
+    const target = chapterByPosition(seekDraft * bookLength);
+    setSeekDraft(null);
+    goTo(target.index, target.ratio);
+  };
 
   useEffect(() => {
     const onKey = (e) => {
@@ -449,13 +655,40 @@ const ReaderPage = () => {
     );
   }
 
-  const overall = total > 0 ? (current.index + current.ratio) / total : 0;
+  // Chapter sizes from the server (rendered HTML length) give the progress
+  // bar and seek a proper, per-chapter-weighted scale; chapters default to
+  // equal weights when the sizes are unavailable.
+  const chapterSizes = useMemo(
+    () => meta?.chapters?.map((c) => (typeof c.size === "number" && c.size > 0 ? c.size : 1000)) ?? [],
+    [meta],
+  );
+  const chapterOffsets = useMemo(() => {
+    const out = [0];
+    for (const size of chapterSizes) out.push(out[out.length - 1] + size);
+    return out;
+  }, [chapterSizes]);
+  const bookLength = chapterOffsets[chapterOffsets.length - 1] ?? 0;
+  const chapterByPosition = useMemo(() => {
+    return (pos) => {
+      // First chapter whose end passes the absolute position.
+      let lo = 0;
+      while (lo + 1 < chapterOffsets.length && chapterOffsets[lo + 1] <= pos) lo++;
+      const size = chapterSizes[lo] ?? 1;
+      return { index: lo, ratio: Math.max(0, Math.min(1, chapterSizes[lo] ? (pos - chapterOffsets[lo]) / size : 0)) };
+    };
+  }, [chapterOffsets, chapterSizes]);
+  const overall = total > 0 ? (chapterOffsets[current.index] + current.ratio * chapterSizes[current.index]) / bookLength : 0;
   const lastLoaded = loaded.length ? loaded[loaded.length - 1].index : -1;
   const firstLoaded = loaded.length ? loaded[0].index : 0;
 
   return (
     <div
-      className={`reader reader--${prefs.theme} reader--font-${prefs.font ?? "serif"} ${immersive ? "reader--immersive" : ""}`}
+      className={`reader reader--${prefs.theme} reader--font-${prefs.font ?? "serif"} ${
+        prefs.align === "justify" ? "reader--justify" : ""
+      } ${prefs.hyphens ? "reader--hyphens" : ""} ${prefs.indent ? "reader--indent" : ""} reader--space-${prefs.spaceStep ?? 1} ${
+        immersive ? "reader--immersive" : ""
+      }`}
+      lang={meta?.lang ?? ""}
       style={{
         "--reader-font-size": `${FONT_SIZES[prefs.fontStep] ?? FONT_SIZES[1]}px`,
         "--reader-line-height": LINE_HEIGHTS[prefs.lineStep] ?? LINE_HEIGHTS[1],
@@ -472,6 +705,18 @@ const ReaderPage = () => {
         </div>
         <button type="button" className="reader__bar-btn" title={t("reader.toc")} onClick={() => setTocOpen((v) => !v)}>
           ☰
+        </button>
+        <button
+          type="button"
+          className="reader__bar-btn"
+          title={t("reader.bookmarkAdd")}
+          onClick={() => {
+            addHereBookmark();
+            setPanelTab("bookmarks");
+            setTocOpen(true);
+          }}
+        >
+          ⚑
         </button>
         <button type="button" className="reader__bar-btn reader__bar-btn--aa" title={t("reader.settings")} onClick={() => setSettingsOpen((v) => !v)}>
           Aa
@@ -495,21 +740,65 @@ const ReaderPage = () => {
           </div>
           <div className="reader__settings-group">
             <span className="reader__settings-label">{t("reader.typeface")}</span>
+            {BOOK_FONTS().map((f) => (
+              <button
+                type="button"
+                key={f.id}
+                className={(prefs.font ?? "serif") === f.id ? "is-active" : ""}
+                style={f.css ? { fontFamily: f.css } : undefined}
+                onClick={() => updatePrefs({ font: f.id })}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <div className="reader__settings-group">
+            <span className="reader__settings-label">{t("reader.align")}</span>
             <button
               type="button"
-              className={prefs.font !== "sans" ? "is-active" : ""}
-              style={{ fontFamily: "georgia, serif" }}
-              onClick={() => updatePrefs({ font: "serif" })}
+              className={(prefs.align ?? "left") !== "justify" ? "is-active" : ""}
+              onClick={() => updatePrefs({ align: "left" })}
             >
-              {t("reader.serif")}
+              {t("reader.align.left")}
             </button>
             <button
               type="button"
-              className={prefs.font === "sans" ? "is-active" : ""}
-              onClick={() => updatePrefs({ font: "sans" })}
+              className={(prefs.align ?? "left") === "justify" ? "is-active" : ""}
+              onClick={() => updatePrefs({ align: "justify" })}
             >
-              {t("reader.sans")}
+              {t("reader.align.justify")}
             </button>
+          </div>
+          <div className="reader__settings-group">
+            <span className="reader__settings-label">{t("reader.paragraph")}</span>
+            <button
+              type="button"
+              className={prefs.indent ? "is-active" : ""}
+              onClick={() => updatePrefs({ indent: !prefs.indent })}
+            >
+              {t("reader.indent")}
+            </button>
+            <button
+              type="button"
+              className={prefs.hyphens ? "is-active" : ""}
+              onClick={() => updatePrefs({ hyphens: !prefs.hyphens })}
+            >
+              {t("reader.hyphens")}
+            </button>
+            {[
+              { step: 0, label: t("reader.space.tight") },
+              { step: 1, label: t("reader.space.normal") },
+              { step: 2, label: t("reader.space.roomy") },
+            ].map((s) => (
+              <button
+                type="button"
+                key={s.step}
+                className={(prefs.spaceStep ?? 1) === s.step ? "is-active" : ""}
+                onClick={() => updatePrefs({ spaceStep: s.step })}
+              >
+                {s.label}
+              </button>
+            ))}
           </div>
           <div className="reader__settings-group">
             <span className="reader__settings-label">{t("reader.lineHeight")}</span>
@@ -564,20 +853,91 @@ const ReaderPage = () => {
 
       {tocOpen && (
         <nav className="reader__toc">
-          <h3>{t("reader.toc")}</h3>
-          <ol>
-            {meta?.chapters?.map((ch) => (
-              <li key={ch.index}>
+          <input
+            type="search"
+            className="reader__toc-search"
+            placeholder={t("reader.searchInBook")}
+            value={panelSearch}
+            onChange={onPanelSearch}
+            autoComplete="off"
+          />
+          {panelSearchResults != null && (
+            <div className="reader__search-results">
+              {panelSearching && <p className="reader__toc-hint">{t("loading")}</p>}
+              {!panelSearching && panelSearchResults.length === 0 && (
+                <p className="reader__toc-hint">{t("reader.noMatches")}</p>
+              )}
+              {panelSearchResults.map((m) => (
+                <button
+                  key={m.index}
+                  type="button"
+                  className={`reader__search-hit ${m.index === current.index ? "is-active" : ""}`}
+                  onClick={() => jumpAndHighlight(m)}
+                >
+                  <span className="reader__search-title">
+                    {m.title} · {t("reader.matches", { n: m.count })}
+                  </span>
+                  {m.snippet && <span className="reader__search-snippet">{m.snippet}</span>}
+                </button>
+              ))}
+              {highlightCount > 0 && <p className="reader__toc-hint">{t("reader.matchesShown", { n: highlightCount })}</p>}
+            </div>
+          )}
+          {panelSearchResults == null && (
+            <>
+              <div className="reader__toc-tabs">
+                <button type="button" className={panelTab === "chapters" ? "is-active" : ""} onClick={() => setPanelTab("chapters")}>
+                  {t("reader.toc")}
+                </button>
                 <button
                   type="button"
-                  className={ch.index === current.index ? "is-active" : ""}
-                  onClick={() => goTo(ch.index)}
+                  className={panelTab === "bookmarks" ? "is-active" : ""}
+                  onClick={() => setPanelTab("bookmarks")}
                 >
-                  {ch.title}
+                  {t("reader.bookmarks")}
                 </button>
-              </li>
-            ))}
-          </ol>
+              </div>
+              {panelTab === "chapters" ? (
+                <ol>
+                  {meta?.chapters?.map((ch) => (
+                    <li key={ch.index}>
+                      <button
+                        type="button"
+                        className={ch.index === current.index ? "is-active" : ""}
+                        onClick={() => goTo(ch.index)}
+                      >
+                        {ch.title}
+                      </button>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <div className="reader__bookmarks">
+                  {!bookmarks.length && <p className="reader__toc-hint">{t("reader.noBookmarks")}</p>}
+                  {bookmarks.map((b) => (
+                    <div key={b.id} className="reader__bookmark">
+                      <button
+                        type="button"
+                        className="reader__bookmark-jump"
+                        onClick={() => goTo(b.chapter, b.position)}
+                      >
+                        <span className="reader__bookmark-label">{b.label || chapterLabel(meta, b.chapter)}</span>
+                        <span className="reader__bookmark-pos">{Math.round((b.position ?? 0) * 100)}%</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="reader__bookmark-del"
+                        onClick={() => removeBookmark(b.id)}
+                        title={t("reader.delete")}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
         </nav>
       )}
 
@@ -655,10 +1015,23 @@ const ReaderPage = () => {
       )}
 
       <footer className="reader__progress" aria-label="progress">
-        <div className="reader__progress-fill" style={{ width: `${Math.round(overall * 1000) / 10}%` }} />
+        <input
+          type="range"
+          className="reader__seek"
+          min="0"
+          max="1"
+          step="0.002"
+          value={seekDraft ?? overall}
+          aria-label={t("reader.position")}
+          onChange={(e) => setSeekDraft(parseFloat(e.target.value))}
+          onPointerUp={commitSeek}
+          onTouchEnd={commitSeek}
+          onKeyUp={(e) => (e.key === "Enter" || e.key === " " ? commitSeek() : undefined)}
+        />
+        <div className="reader__progress-fill" style={{ width: `${Math.round((seekDraft ?? overall) * 1000) / 10}%` }} />
         <div className="reader__progress-info">
           <span className="reader__progress-chapter">{chapterLabel(meta, current.index)}</span>
-          <span className="reader__progress-pct">{Math.round(overall * 100)}%</span>
+          <span className="reader__progress-pct">{Math.round((seekDraft ?? overall) * 100)}%</span>
         </div>
       </footer>
     </div>

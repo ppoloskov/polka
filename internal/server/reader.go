@@ -148,13 +148,14 @@ func (s *Server) handleReadMeta(w http.ResponseWriter, r *http.Request) {
 				title = tr(lang, "reader.chapter", i+1)
 			}
 		}
-		chapters = append(chapters, map[string]any{"index": i, "title": title})
+		chapters = append(chapters, map[string]any{"index": i, "title": title, "size": len(ch.HTML)})
 	}
 	writeJSON(w, map[string]any{
 		"bookId":   bookID,
 		"format":   format,
 		"title":    d.Title,
 		"authors":  d.AuthorNames,
+		"lang":     d.Lang,
 		"chapters": chapters,
 		"notes":    text.Notes,
 		"digest":   text.Digest,
@@ -189,6 +190,174 @@ func (s *Server) handleReadChapter(w http.ResponseWriter, r *http.Request) {
 		"titleHtml": text.Chapters[n].TitleHTML,
 		"html":      text.Chapters[n].HTML,
 	})
+}
+
+// GET /api/v1/read/{id}/search?q= — find the query in the book text.
+// Chapters are scanned in reading order from the parsed book cache;
+// matches report the chapter, the occurrence count and one snippet. The
+// client jumps to the chapter and highlights occurrences there.
+func (s *Server) handleReadSearch(w http.ResponseWriter, r *http.Request) {
+	bookID, ok := s.readerBookID(w, r)
+	if !ok {
+		return
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" || len(query) > 100 {
+		http.Error(w, "invalid query", http.StatusBadRequest)
+		return
+	}
+	text, err := s.bookText(r, bookID)
+	if err != nil {
+		s.log.Warn("read book failed", "book", bookID, "error", err)
+		s.apiError(w, err)
+		return
+	}
+	needle := strings.ToLower(query)
+	matches := make([]map[string]any, 0, 4)
+	total := 0
+	for i, ch := range text.Chapters {
+		plain, lower := chapterPlainText(ch.HTML)
+		count, snippet := countMatches(lower, needle, plain)
+		if count == 0 {
+			continue
+		}
+		title := ch.Title
+		if title == "" {
+			title = tr(reqLang(r), "reader.chapter", i+1)
+		}
+		matches = append(matches, map[string]any{
+			"index":   i,
+			"title":   title,
+			"count":   count,
+			"snippet": snippet,
+		})
+		total += count
+	}
+	writeJSON(w, map[string]any{"matches": matches, "total": total})
+}
+
+// chapterPlainText strips tags and decodes the few entities the converter
+// emits, returning usable text plus its lowercase form for searching.
+func chapterPlainText(html string) (text, lower string) {
+	var sb strings.Builder
+	sb.Grow(len(html))
+	for i := 0; i < len(html); {
+		if html[i] == '<' {
+			if j := strings.IndexByte(html[i:], '>'); j >= 0 {
+				i += j + 1
+				sb.WriteByte(' ')
+				continue
+			}
+			break
+		}
+		sb.WriteByte(html[i])
+		i++
+	}
+	text = strings.Join(strings.Fields(sb.String()), " ")
+	replacer := strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", `"`, "&#39;", "'", "&nbsp;", " ")
+	text = replacer.Replace(text)
+	return text, strings.ToLower(text)
+}
+
+// countMatches counts non-overlapping case-insensitive occurrences and
+// builds one contextual snippet around the first match.
+func countMatches(lower, needle, plain string) (int, string) {
+	count := 0
+	first := -1
+	for i := 0; ; {
+		j := strings.Index(lower[i:], needle)
+		if j < 0 {
+			break
+		}
+		at := i + j
+		if first < 0 {
+			first = at
+		}
+		count++
+		i = at + len(needle)
+	}
+	if count == 0 {
+		return 0, ""
+	}
+	const ctx = 48
+	lo, hi := first-ctx, first+len(needle)+ctx
+	for lo > 0 && plain[lo] != ' ' {
+		lo--
+	}
+	if hi > len(plain) {
+		hi = len(plain)
+	} else {
+		for hi < len(plain) && plain[hi] != ' ' {
+			hi++
+		}
+	}
+	if lo > 0 {
+		lo++
+	}
+	return count, strings.TrimSpace(plain[lo:hi])
+}
+
+// GET/POST/DELETE /api/v1/read/{id}/bookmarks — saved positions of one
+// book for the current user.
+func (s *Server) handleReadBookmarks(w http.ResponseWriter, r *http.Request) {
+	u := s.currentUser(r)
+	if u == nil {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	bookID, ok := s.readerBookID(w, r)
+	if !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		bookmarks, err := s.users.Bookmarks(r.Context(), u.ID, bookID)
+		if err != nil {
+			s.apiError(w, err)
+			return
+		}
+		writeJSON(w, map[string]any{"bookmarks": bookmarks})
+	case http.MethodPost:
+		var req struct {
+			Chapter  int     `json:"chapter"`
+			Position float64 `json:"position"`
+			Locator  string  `json:"locator"`
+			Label    string  `json:"label"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		if req.Chapter < 0 {
+			http.Error(w, "invalid chapter", http.StatusBadRequest)
+			return
+		}
+		if req.Position < 0 || req.Position > 1 {
+			req.Position = 0
+		}
+		if len(req.Label) > 200 {
+			req.Label = req.Label[:200]
+		}
+		b, err := s.users.AddBookmark(r.Context(), u.ID, bookID, req.Chapter, req.Position, req.Locator, req.Label)
+		if err != nil {
+			s.apiError(w, err)
+			return
+		}
+		writeJSON(w, map[string]any{"bookmark": b})
+	case http.MethodDelete:
+		id, err := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+		if err != nil || id <= 0 {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		if err := s.users.DeleteBookmark(r.Context(), u.ID, id); err != nil {
+			s.apiError(w, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // GET /api/v1/read/{id}/img/{imgId} — an illustration from the book.
