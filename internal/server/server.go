@@ -197,6 +197,10 @@ func New(cfg *config.Config, log *slog.Logger, st *store.Store, lib *library.Lib
 		mux.HandleFunc("GET /api/v1/read/{id}", s.protected(s.handleReadMeta))
 		mux.HandleFunc("GET /api/v1/read/{id}/chapter/{n}", s.protected(s.handleReadChapter))
 		mux.HandleFunc("GET /api/v1/read/{id}/img/{imgId}", s.protected(s.handleReadImage))
+		mux.HandleFunc("GET /api/v1/read/{id}/search", s.protected(s.handleReadSearch))
+		mux.HandleFunc("GET /api/v1/read/{id}/bookmarks", s.protected(s.handleReadBookmarks))
+		mux.HandleFunc("POST /api/v1/read/{id}/bookmarks", s.protected(s.handleReadBookmarks))
+		mux.HandleFunc("DELETE /api/v1/read/{id}/bookmarks", s.protected(s.handleReadBookmarks))
 		mux.HandleFunc("GET /api/v1/read/{id}/progress", s.protected(s.handleReadProgress))
 		mux.HandleFunc("POST /api/v1/read/{id}/progress", s.protected(s.handleReadProgress))
 

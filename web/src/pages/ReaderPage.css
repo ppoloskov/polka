@@ -261,6 +261,62 @@
   letter-spacing: 0.003em;
 }
 
+/* --- Book font families (bundled, see readerFonts.js) --- */
+
+.reader--font-literata .reader__content,
+.reader--font-literata .reader__toc,
+.reader--font-literata .reader__chapter-title {
+  --reader-serif: "Literata", georgia, serif;
+}
+
+.reader--font-ptserif .reader__content,
+.reader--font-ptserif .reader__toc,
+.reader--font-ptserif .reader__chapter-title {
+  --reader-serif: "PT Serif", georgia, serif;
+}
+
+.reader--font-noto .reader__content,
+.reader--font-noto .reader__toc,
+.reader--font-noto .reader__chapter-title {
+  --reader-serif: "Noto Serif", georgia, serif;
+}
+
+/* --- Paragraph typography --- */
+
+/* Justification; automatic hyphenation with language tagging (content is
+   tagged with the book's lang, so the browser picks correct hyphenation
+   patterns) as an independent control. */
+.reader--justify .reader__content {
+  text-align: justify;
+  overflow-wrap: break-word;
+}
+
+.reader--hyphens .reader__content {
+  hyphens: auto;
+  -webkit-hyphens: auto;
+}
+
+.reader--indent .reader__content > p {
+  text-indent: 1.6em;
+}
+
+.reader--indent .reader__content > p:first-of-type {
+  text-indent: 0; /* the drop-cap paragraph stays flush */
+}
+
+/* Paragraph spacing scale: 0 tight, 1 normal, 2 roomy. */
+.reader--space-0 .reader__content > p {
+  margin: 0 0 0.45em;
+}
+
+.reader--space-1 .reader__content > p {
+  margin: 0 0 1.15em;
+}
+
+.reader--space-2 .reader__content > p {
+  margin: 0 0 1.8em;
+}
+
 .reader--font-sans .reader__content {
   font-family: var(--font-sans);
   letter-spacing: 0;
@@ -535,3 +591,128 @@
   border-color: #b44a12;
 }
 .reader__sync-notice button { margin: 0.25rem 0.75rem 0.25rem 0; }
+
+/* --- Side panel: search + bookmarks --- */
+
+.reader__toc-search {
+  margin: 0.4rem 0.2rem 0.4rem;
+  padding: 0.5rem 0.8rem;
+  border: 1px solid var(--reader-border, #ccc);
+  border-radius: 0.5rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  width: calc(100% - 0.4rem);
+}
+
+.reader__toc-hint {
+  padding: 0.45rem 0.2rem;
+  opacity: 0.7;
+  font-size: 0.86rem;
+  margin: 0;
+}
+
+.reader__toc-tabs {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.2rem 0.2rem 0.6rem;
+}
+
+.reader__toc-tabs button {
+  flex: 1;
+}
+
+.reader__toc-tabs button.is-active {
+  font-weight: 700;
+}
+
+.reader__search-hit {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.45rem 0.5rem;
+  border-radius: 0.4rem;
+}
+
+.reader__search-hit.is-active {
+  font-weight: 700;
+}
+
+.reader__search-title {
+  display: block;
+  font-size: 0.92rem;
+}
+
+.reader__search-snippet {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 0.82rem;
+  opacity: 0.75;
+}
+
+.reader__bookmark {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.reader__bookmark-jump {
+  flex: 1;
+  text-align: left;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: 0.4rem;
+}
+
+.reader__bookmark-pos {
+  opacity: 0.65;
+  font-size: 0.82rem;
+}
+
+.reader__bookmark-del {
+  opacity: 0.65;
+  padding: 0.3rem 0.5rem;
+}
+
+.reader__bookmark-del:hover {
+  opacity: 1;
+}
+
+/* In-chapter search highlights */
+mark.reader__hl {
+  background: rgba(255, 208, 62, 0.45);
+  color: inherit;
+  border-radius: 0.15rem;
+  padding: 0.02em 0;
+}
+
+.reader--night mark.reader__hl {
+  background: rgba(120, 160, 255, 0.35);
+}
+
+/* --- Seekable progress bar (the fixed footer is the positioned anchor) --- */
+
+.reader__seek {
+  -webkit-appearance: none;
+  appearance: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -10px;
+  bottom: -10px;
+  margin: 0;
+  width: 100%;
+  background: transparent;
+  cursor: pointer;
+}
+
+.reader__seek:focus-visible {
+  outline: 2px solid var(--reader-fg);
+  outline-offset: 2px;
+  opacity: 1;
+}

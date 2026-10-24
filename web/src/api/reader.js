@@ -60,3 +60,47 @@ export const saveFB2Progress = async (bookId, position, revision, digest) => {
   }
   return response.json();
 };
+
+// In-book search: server scans the parsed book and returns matching
+// chapters with occurrence counts and one snippet.
+export const fetchReadSearch = async (bookId, q) => {
+  const res = await fetch(api.buildUrl(`api/v1/read/${bookId}/search?q=${encodeURIComponent(q)}`), {
+    credentials: "include",
+    headers: { "X-Polka-Lang": getLang() },
+  });
+  if (!res.ok) {
+    const err = new Error(`Request failed: ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+};
+
+const readBookFetch = async (path, init = {}) => {
+  const res = await fetch(api.buildUrl(path), {
+    credentials: "include",
+    headers: { "Content-Type": "application/json", "X-Polka-Lang": getLang() },
+    ...init,
+  });
+  if (!res.ok) {
+    const err = new Error(`Request failed: ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+};
+
+// Reading bookmarks for one book. Server-side for logged-in users; the
+// public mode falls back to localStorage in the reader component.
+export const fetchBookmarks = async (bookId) => {
+  const res = await readBookFetch(`api/v1/read/${bookId}/bookmarks`);
+  return res?.bookmarks ?? [];
+};
+
+export const addBookmark = (bookId, bookmark) =>
+  readBookFetch(`api/v1/read/${bookId}/bookmarks`, { method: "POST", body: JSON.stringify(bookmark) }).then(
+    (res) => res.bookmark,
+  );
+
+export const deleteBookmark = (bookId, id) =>
+  readBookFetch(`api/v1/read/${bookId}/bookmarks?id=${id}`, { method: "DELETE" });

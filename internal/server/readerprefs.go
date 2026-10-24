@@ -15,9 +15,13 @@ import (
 type readerPrefs struct {
 	FontStep  *int    `json:"fontStep,omitempty"`  // index into the font size scale
 	Theme     *string `json:"theme,omitempty"`     // paper | sepia | night
-	Font      *string `json:"font,omitempty"`      // serif | sans
+	Font      *string `json:"font,omitempty"`      // serif | sans | literata | ptserif | noto
 	LineStep  *int    `json:"lineStep,omitempty"`  // line height: 0 compact, 1 normal, 2 loose
 	WidthStep *int    `json:"widthStep,omitempty"` // text measure: 0 narrow, 1 normal, 2 wide
+	Align     *string `json:"align,omitempty"`     // left | justify
+	Hyphens   *bool   `json:"hyphens,omitempty"`   // automatic hyphenation (language-tagged content)
+	Indent    *bool   `json:"indent,omitempty"`    // first-line paragraph indent
+	SpaceStep *int    `json:"spaceStep,omitempty"` // paragraph spacing: 0 tight, 1 normal, 2 roomy
 }
 
 func clampStep(v *int, max int) {
@@ -64,14 +68,22 @@ func (s *Server) handleReaderPrefs(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid body", http.StatusBadRequest)
 			return
 		}
-		if !oneOf(req.Theme, "paper", "sepia", "night") || !oneOf(req.Font, "serif", "sans") {
+		if !oneOf(req.Theme, "paper", "sepia", "night") ||
+			!oneOf(req.Font, "serif", "sans", "literata", "ptserif", "noto") ||
+			!oneOf(req.Align, "left", "justify") {
 			http.Error(w, "invalid value", http.StatusBadRequest)
 			return
 		}
 		clampStep(req.FontStep, 3)
 		clampStep(req.LineStep, 2)
 		clampStep(req.WidthStep, 2)
+		clampStep(req.SpaceStep, 2)
 		merge := func(dst **int, src *int) {
+			if src != nil {
+				*dst = src
+			}
+		}
+		mergeBool := func(dst **bool, src *bool) {
 			if src != nil {
 				*dst = src
 			}
@@ -79,11 +91,17 @@ func (s *Server) handleReaderPrefs(w http.ResponseWriter, r *http.Request) {
 		merge(&stored.FontStep, req.FontStep)
 		merge(&stored.LineStep, req.LineStep)
 		merge(&stored.WidthStep, req.WidthStep)
+		merge(&stored.SpaceStep, req.SpaceStep)
+		mergeBool(&stored.Hyphens, req.Hyphens)
+		mergeBool(&stored.Indent, req.Indent)
 		if req.Theme != nil {
 			stored.Theme = req.Theme
 		}
 		if req.Font != nil {
 			stored.Font = req.Font
+		}
+		if req.Align != nil {
+			stored.Align = req.Align
 		}
 		raw, _ := json.Marshal(stored)
 		if err := s.users.SetSetting(r.Context(), readerPrefsKey(u.ID), string(raw)); err != nil {
