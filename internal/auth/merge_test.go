@@ -216,3 +216,36 @@ func TestMergeBookRefsReplayIsNoop(t *testing.T) {
 		t.Errorf("loser progress came back on replay: %v", err)
 	}
 }
+
+// Consolidation transfers bookmarks together with the rest of the personal
+// state, and the reference floor counts them.
+func TestMergeBookRefsTransfersBookmarks(t *testing.T) {
+	s := newService(t)
+	ctx := context.Background()
+	reader, err := s.CreateUser(ctx, "reader", "pass1234", "", RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const loser, winner = int64(70), int64(80)
+	if _, err := s.AddBookmark(ctx, reader.ID, loser, 3, 0.4, "/FictionBook[1]/body[1]/p[2]/text()[1].12", "Глава 3"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddBookmark(ctx, reader.ID, winner, 1, 0.1, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	maxID, err := s.MaxBookID(ctx)
+	if err != nil || maxID < winner {
+		t.Fatalf("MaxBookID = %d, %v; want at least the winner id %d", maxID, err, winner)
+	}
+	if err := s.MergeBookRefs(ctx, []BookRefPair{{Loser: loser, Winner: winner}}); err != nil {
+		t.Fatal(err)
+	}
+	winnerBookmarks, err := s.Bookmarks(ctx, reader.ID, winner)
+	if err != nil || len(winnerBookmarks) != 2 {
+		t.Fatalf("winner bookmarks = %+v, %v; want both", winnerBookmarks, err)
+	}
+	loserBookmarks, err := s.Bookmarks(ctx, reader.ID, loser)
+	if err != nil || len(loserBookmarks) != 0 {
+		t.Fatalf("loser bookmarks = %+v, %v; want none left", loserBookmarks, err)
+	}
+}

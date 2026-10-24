@@ -156,12 +156,12 @@ func (s *Store) UpdateLibrary(ctx context.Context, id string, name *string, enab
 		if err := libraryGenreDeltaTx(ctx, tx, id, dir, deltas); err != nil {
 			return err
 		}
-		if _, err := s.bumpCountsTx(ctx, tx, dir*n, deltas, ""); err != nil {
+		if _, err := s.bumpCountsTx(ctx, tx, dir*n, deltas, "", nil); err != nil {
 			return err
 		}
 	} else if !s.metaHoldsCountsTx(ctx, tx) {
 		// Counts were never maintained (upgraded database): fill them once.
-		if _, err := s.bumpCountsTx(ctx, tx, 0, nil, ""); err != nil {
+		if _, err := s.bumpCountsTx(ctx, tx, 0, nil, "", nil); err != nil {
 			return err
 		}
 	}

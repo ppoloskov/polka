@@ -74,7 +74,7 @@ func Open(path string) (*Service, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema + progressSchema + settingsSchema + listsSchema + kosyncSchema); err != nil {
+	if _, err := db.Exec(schema + progressSchema + settingsSchema + listsSchema + kosyncSchema + bookmarksSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("auth schema: %w", err)
 	}

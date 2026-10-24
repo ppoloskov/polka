@@ -17,6 +17,7 @@ const PdfReader = ({ bookId, meta }) => {
   const [pageSize, setPageSize] = useState(null); // approximate dimensions for placeholders
   const [current, setCurrent] = useState(1);
   const [error, setError] = useState(null);
+  const [saveFailed, setSaveFailed] = useState(false);
 
   const containerRef = useRef(null);
   const rendered = useRef(new Set());
@@ -53,7 +54,9 @@ const PdfReader = ({ bookId, meta }) => {
   const persist = (page) => {
     const overall = numPages > 0 ? page / numPages : 0;
     if (serverStored.current) {
-      saveProgress(bookId, page, 0, overall, "");
+      saveProgress(bookId, page, 0, overall, "")
+        .then(() => setSaveFailed(false))
+        .catch(() => setSaveFailed(true));
     } else {
       localProgress.set(bookId, page, 0);
     }
@@ -151,6 +154,11 @@ const PdfReader = ({ bookId, meta }) => {
         <a className="reader__bar-btn" href={meta.fileUrl} title={t("reader.openExternal")} target="_blank" rel="noreferrer">⤓</a>
       </header>
 
+      {saveFailed && (
+        <aside role="alert" className="reader__sync-notice reader__save-notice">
+          <p>{t("reader.saveFailed")}</p>
+        </aside>
+      )}
       {!doc && <div className="reader__loading">{t("reader.pdfLoading")}</div>}
 
       <main className="pdf-reader__pages" ref={containerRef}>

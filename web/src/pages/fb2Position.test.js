@@ -66,3 +66,30 @@ it("captures the end of short visible text above the reading anchor", () => {
   vi.spyOn(span, "getBoundingClientRect").mockReturnValue({ top: 100, bottom: 120 });
   expect(captureFB2Position(document.querySelector("article"), 280)).toBe("/FictionBook[1]/body[1]/p[1]/text()[1].3");
 });
+
+// Search highlighting wraps text in <mark> elements; capture and restore
+// must treat the span's text as one continuous space across the splits —
+// including a locator at the very end of the last segment.
+it("captures and restores positions through search-highlight marks", () => {
+  document.body.innerHTML =
+    '<article><span data-fb2-path="/FictionBook[1]/body[1]/p[1]/text()[1]">Первая часть и вторая</span></article>';
+  // The shape the highlighter produces: text / mark / text.
+  const span = document.querySelector("span");
+  span.innerHTML = 'Первая <mark class="reader__hl">часть</mark> и вторая';
+  vi.spyOn(span, "getBoundingClientRect").mockReturnValue({ top: 100, bottom: 120 });
+  // jsdom ranges carry no rects; every boundary counts as above the anchor,
+  // so the capture converges to the end of the span.
+  const positions = [];
+  vi.spyOn(document, "createRange").mockImplementation(() => ({
+    setStart: (_node, offset) => positions.push(offset),
+    setEnd: vi.fn(),
+    getBoundingClientRect: () => ({ top: 800, bottom: 0 }),
+  }));
+  const locator = captureFB2Position(document.querySelector("article"), 280);
+  const total = Array.from(span.textContent).length;
+  expect(locator).toBe(`/FictionBook[1]/body[1]/p[1]/text()[1].${total}`);
+  // The end-of-span boundary is restorable through the mark fragments.
+  expect(restoreFB2Position(document.querySelector("article"), locator)).toBe(true);
+  // The end boundary sits at the end of the LAST text segment (" и вторая").
+  expect(positions.at(-1)).toBe(span.lastChild.textContent.length);
+});

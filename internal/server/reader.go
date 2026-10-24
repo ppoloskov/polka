@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/net/html"
+
 	"github.com/vestigiumincaligne/polka/internal/auth"
 	"github.com/vestigiumincaligne/polka/internal/library"
 )
@@ -148,13 +150,14 @@ func (s *Server) handleReadMeta(w http.ResponseWriter, r *http.Request) {
 				title = tr(lang, "reader.chapter", i+1)
 			}
 		}
-		chapters = append(chapters, map[string]any{"index": i, "title": title})
+		chapters = append(chapters, map[string]any{"index": i, "title": title, "size": len(ch.HTML)})
 	}
 	writeJSON(w, map[string]any{
 		"bookId":   bookID,
 		"format":   format,
 		"title":    d.Title,
 		"authors":  d.AuthorNames,
+		"lang":     d.Lang,
 		"chapters": chapters,
 		"notes":    text.Notes,
 		"digest":   text.Digest,
@@ -189,6 +192,197 @@ func (s *Server) handleReadChapter(w http.ResponseWriter, r *http.Request) {
 		"titleHtml": text.Chapters[n].TitleHTML,
 		"html":      text.Chapters[n].HTML,
 	})
+}
+
+// GET /api/v1/read/{id}/search?q= — find the query in the book text.
+// Chapters are scanned in reading order from the parsed book cache;
+// matches report the chapter, the occurrence count and one snippet. The
+// client jumps to the chapter and highlights occurrences there.
+func (s *Server) handleReadSearch(w http.ResponseWriter, r *http.Request) {
+	bookID, ok := s.readerBookID(w, r)
+	if !ok {
+		return
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" || len(query) > 100 {
+		http.Error(w, "invalid query", http.StatusBadRequest)
+		return
+	}
+	text, err := s.bookText(r, bookID)
+	if err != nil {
+		s.log.Warn("read book failed", "book", bookID, "error", err)
+		s.apiError(w, err)
+		return
+	}
+	needle := strings.ToLower(query)
+	matches := make([]map[string]any, 0, 4)
+	total := 0
+	for i, ch := range text.Chapters {
+		plain, lower := chapterPlainText(ch.HTML)
+		count, snippet := countMatches(lower, needle, plain)
+		if count == 0 {
+			continue
+		}
+		title := ch.Title
+		if title == "" {
+			title = tr(reqLang(r), "reader.chapter", i+1)
+		}
+		matches = append(matches, map[string]any{
+			"index":   i,
+			"title":   title,
+			"count":   count,
+			"snippet": snippet,
+		})
+		total += count
+	}
+	writeJSON(w, map[string]any{"matches": matches, "total": total})
+}
+
+// chapterPlainText strips the chapter markup and decodes entities via the
+// standard HTML tokenizer (golang.org/x/net/html), returning usable text
+// plus its lowercase form for searching. Inline elements (<em>…) join the
+// surrounding words; block-level elements emit a separator so neighbouring
+// paragraphs cannot merge into one token.
+func chapterPlainText(htmlStr string) (text, lower string) {
+	doc, err := html.Parse(strings.NewReader(htmlStr))
+	if err != nil {
+		return "", ""
+	}
+	var sb strings.Builder
+	inline := map[string]bool{"em": true, "strong": true, "a": true, "i": true, "b": true, "u": true, "s": true, "small": true, "sub": true, "sup": true, "span": true}
+	var walk func(*html.Node)
+	separate := func(n *html.Node) { sb.WriteByte(' ') }
+	walk = func(n *html.Node) {
+		if n.Type == html.TextNode {
+			sb.WriteString(n.Data)
+			return
+		}
+		if n.Type != html.ElementNode {
+			for c := n.FirstChild; c != nil; c = c.NextSibling {
+				walk(c)
+			}
+			return
+		}
+		if !inline[n.Data] { // block-level: separate from the surrounding text
+			separate(n)
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+		if !inline[n.Data] {
+			separate(n)
+		}
+	}
+	walk(doc)
+	text = strings.Join(strings.Fields(sb.String()), " ")
+	return text, strings.ToLower(text)
+}
+
+// countMatches counts non-overlapping case-insensitive occurrences and
+// builds one contextual snippet around the first match.
+func countMatches(lower, needle, plain string) (int, string) {
+	count := 0
+	first := -1
+	for i := 0; ; {
+		j := strings.Index(lower[i:], needle)
+		if j < 0 {
+			break
+		}
+		at := i + j
+		if first < 0 {
+			first = at
+		}
+		count++
+		i = at + len(needle)
+	}
+	if count == 0 {
+		return 0, ""
+	}
+	// Snippet bounds clamp to the text (a match at the very start or end
+	// has no room for full context).
+	const ctx = 48
+	lo, hi := first-ctx, first+len(needle)+ctx
+	if lo < 0 {
+		lo = 0
+	} else {
+		for lo > 0 && plain[lo] != ' ' {
+			lo--
+		}
+		if lo > 0 {
+			lo++
+		}
+	}
+	if hi > len(plain) {
+		hi = len(plain)
+	} else {
+		for hi < len(plain) && plain[hi] != ' ' {
+			hi++
+		}
+	}
+	return count, strings.TrimSpace(plain[lo:hi])
+}
+
+// GET/POST/DELETE /api/v1/read/{id}/bookmarks — saved positions of one
+// book for the current user.
+func (s *Server) handleReadBookmarks(w http.ResponseWriter, r *http.Request) {
+	u := s.currentUser(r)
+	if u == nil {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	bookID, ok := s.readerBookID(w, r)
+	if !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		bookmarks, err := s.users.Bookmarks(r.Context(), u.ID, bookID)
+		if err != nil {
+			s.apiError(w, err)
+			return
+		}
+		writeJSON(w, map[string]any{"bookmarks": bookmarks})
+	case http.MethodPost:
+		var req struct {
+			Chapter  int     `json:"chapter"`
+			Position float64 `json:"position"`
+			Locator  string  `json:"locator"`
+			Label    string  `json:"label"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		if req.Chapter < 0 {
+			http.Error(w, "invalid chapter", http.StatusBadRequest)
+			return
+		}
+		if req.Position < 0 || req.Position > 1 {
+			req.Position = 0
+		}
+		if len(req.Label) > 200 {
+			req.Label = req.Label[:200]
+		}
+		b, err := s.users.AddBookmark(r.Context(), u.ID, bookID, req.Chapter, req.Position, req.Locator, req.Label)
+		if err != nil {
+			s.apiError(w, err)
+			return
+		}
+		writeJSON(w, map[string]any{"bookmark": b})
+	case http.MethodDelete:
+		id, err := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+		if err != nil || id <= 0 {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		if err := s.users.DeleteBookmark(r.Context(), u.ID, id); err != nil {
+			s.apiError(w, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // GET /api/v1/read/{id}/img/{imgId} — an illustration from the book.

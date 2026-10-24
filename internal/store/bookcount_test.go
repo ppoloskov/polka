@@ -119,3 +119,54 @@ func TestBookCountDeltasMatchVisibility(t *testing.T) {
 		t.Fatalf("visible total = %d, %v; want 1", n, err)
 	}
 }
+
+// Scoped per-library genre lists describe the library's live composition
+// regardless of the library being enabled: an invisible book's deletion
+// still updates them, and Clear resets every scoped list.
+func TestScopedGenreCountsFollowHiddenChanges(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "count.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	off, err := st.AddLibrary(ctx, Library{Name: "Off", Kind: "folder", Root: filepath.Join(t.TempDir(), "off")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateLibrary(ctx, off.ID, nil, boolPtr(false)); err != nil {
+		t.Fatal(err)
+	}
+	bookID, err := st.AddBook(ctx, &BookInput{
+		LibraryID: off.ID, Title: "Hidden", Genres: []string{"sf", "sf"}, Folder: "f", File: "1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scoped, err := st.CachedGenresForLibrary(ctx, off.ID)
+	if err != nil || len(scoped) != 1 || scoped[0].Code != "sf" || scoped[0].Books != 1 {
+		t.Fatalf("scoped totals = %+v, %v; want one live sf membership", scoped, err)
+	}
+
+	if err := st.SetBookDeleted(ctx, bookID, true); err != nil {
+		t.Fatal(err)
+	}
+	scoped, err = st.CachedGenresForLibrary(ctx, off.ID)
+	if err != nil || len(scoped) != 0 {
+		t.Fatalf("scoped totals after deleting a hidden book = %+v, %v; want empty", scoped, err)
+	}
+
+	if err := st.Clear(ctx); err != nil {
+		t.Fatal(err)
+	}
+	scoped, err = st.CachedGenresForLibrary(ctx, off.ID)
+	if err != nil || len(scoped) != 0 {
+		t.Fatalf("scoped totals after clear = %+v, %v; want empty", scoped, err)
+	}
+	var stale []byte
+	err = st.DB().QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, "genre_book_counts."+off.ID).Scan(&stale)
+	if err != nil || string(stale) != "[]" {
+		t.Fatalf("scoped meta after clear = %q (%v); want the reset list", stale, err)
+	}
+}
