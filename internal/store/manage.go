@@ -56,22 +56,24 @@ func (s *Store) AddBook(ctx context.Context, b *BookInput) (int64, error) {
 	if err := tx.QueryRowContext(ctx, `SELECT library_id FROM books WHERE id = ?`, id).Scan(&effectiveLibrary); err != nil {
 		return 0, err
 	}
-	// Genre totals count visible memberships only: an upload into a
-	// disabled library contributes nothing, and duplicate codes in the
-	// input map to one stored membership (addBookTx insert-or-ignores the
-	// relation), so the delta must count it once.
+	// The book is inserted live: the library composition always gains it,
+	// while the global visible totals only when the library is enabled
+	// (invisible books never belong to genre totals).
 	visibleDelta := 0
-	var genreDeltas map[string]int
+	globalGenreDeltas := map[string]int{}
+	libraryGenreDeltas := map[string]int{}
+	for _, code := range b.Genres {
+		libraryGenreDeltas[code] = 1 // duplicates map to one membership
+	}
 	if enabled, err := libraryEnabledTx(ctx, tx, effectiveLibrary); err != nil {
 		return 0, err
 	} else if enabled {
 		visibleDelta = 1
-		genreDeltas = map[string]int{}
 		for _, code := range b.Genres {
-			genreDeltas[code] = 1
+			globalGenreDeltas[code] = 1 // duplicates map to one membership
 		}
 	}
-	if _, err := s.bumpCountsTx(ctx, tx, visibleDelta, genreDeltas, effectiveLibrary); err != nil {
+	if _, err := s.bumpCountsTx(ctx, tx, visibleDelta, globalGenreDeltas, effectiveLibrary, libraryGenreDeltas); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -227,30 +229,44 @@ func (s *Store) SetBookDeleted(ctx context.Context, bookID int64, deleted bool) 
 			return err
 		}
 	}
+	// Two independent change sets: the global visible totals (only when the
+	// library is enabled and the visible state flipped), and the library's
+	// own live composition (which changes even in a disabled library).
 	wasVisible := wasDeleted == 0 && missing == 0 && enabled
 	isVisible := !deleted && missing == 0 && enabled
+	wasLive := wasDeleted == 0 && missing == 0
+	isLive := !deleted && missing == 0
+	var genreDeltas map[string]int
+	var libraryGenreDeltas map[string]int
+	visibleDelta := 0
 	if wasVisible != isVisible {
-		visibleDelta := -1
+		visibleDelta = -1
 		if isVisible {
 			visibleDelta = 1
 		}
-		var genreDeltas map[string]int
+	}
+	if wasLive != isLive {
+		liveDelta := -1
+		if isLive {
+			liveDelta = 1
+		}
 		if codes, err := bookGenreDeltaCodes(ctx, tx, bookID); err != nil {
 			return err
 		} else {
 			for _, code := range codes {
-				if genreDeltas == nil {
-					genreDeltas = map[string]int{}
+				libraryGenreDeltas = map[string]int{}
+				libraryGenreDeltas[code] += liveDelta
+				if wasVisible != isVisible {
+					if genreDeltas == nil {
+						genreDeltas = map[string]int{}
+					}
+					genreDeltas[code] += visibleDelta
 				}
-				genreDeltas[code] += visibleDelta
 			}
 		}
-		if _, err := s.bumpCountsTx(ctx, tx, visibleDelta, genreDeltas, libraryID); err != nil {
-			return err
-		}
-	} else if !s.metaHoldsCountsTx(ctx, tx) {
-		// Counts were never maintained (upgraded database): fill them once.
-		if _, err := s.bumpCountsTx(ctx, tx, 0, nil, libraryID); err != nil {
+	}
+	if visibleDelta != 0 || len(genreDeltas) > 0 || len(libraryGenreDeltas) > 0 || !s.metaHoldsCountsTx(ctx, tx) {
+		if _, err := s.bumpCountsTx(ctx, tx, visibleDelta, genreDeltas, libraryID, libraryGenreDeltas); err != nil {
 			return err
 		}
 	}

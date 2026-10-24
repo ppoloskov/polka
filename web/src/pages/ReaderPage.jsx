@@ -404,12 +404,17 @@ const ReaderPage = () => {
 
   // --- Navigate to a chapter (TOC, keyboard) ---
   const goTo = useCallback(
-    (n, ratio = 0) => {
+    (n, ratio = 0, locator = "") => {
       if (!meta || n < 0 || n >= total) return;
       setTocOpen(false);
       setNote(null);
       const already = pageRef.current?.querySelector(`[data-chapter="${n}"]`);
       if (already) {
+        // An exact locator (bookmark/progress) wins over the scroll fraction.
+        if (locator && restoreFB2Position(already, locator)) {
+          setCurrent({ index: n, ratio });
+          return;
+        }
         const top = already.offsetTop + (ratio > 0 ? ratio * already.offsetHeight - 60 : -60);
         window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
         setCurrent({ index: n, ratio });
@@ -418,7 +423,7 @@ const ReaderPage = () => {
       fetchChapter(bookId, n)
         .then((ch) => {
           clearTimeout(saveTimer.current);
-          restoreTo.current = { index: n, ratio, save: true };
+          restoreTo.current = { index: n, ratio, locator, save: true };
           setLoaded([ch]);
           setCurrent({ index: n, ratio });
           interacted.current = true;
@@ -453,7 +458,7 @@ const ReaderPage = () => {
     const entry = {
       chapter: current.index,
       position: current.ratio,
-      locator: captureFB2Position(pageRef.current)?.locator ?? "",
+      locator: captureFB2Position(pageRef.current) || "",
       label: chapterLabel(meta, current.index),
     };
     if (serverStored.current) {
@@ -632,6 +637,33 @@ const ReaderPage = () => {
     }
   };
 
+  // Chapter sizes from the server (rendered HTML length) give the progress
+  // bar and seek a proper, per-chapter-weighted scale; chapters default to
+  // equal weights when the sizes are unavailable. Declared before the PDF
+  // and error early returns so the hook order is unconditional.
+  const chapterSizes = useMemo(
+    () => meta?.chapters?.map((c) => (typeof c.size === "number" && c.size > 0 ? c.size : 1000)) ?? [],
+    [meta],
+  );
+  const chapterOffsets = useMemo(() => {
+    const out = [0];
+    for (const size of chapterSizes) out.push(out[out.length - 1] + size);
+    return out;
+  }, [chapterSizes]);
+  const bookLength = chapterOffsets[chapterOffsets.length - 1] ?? 0;
+  const chapterByPosition = useMemo(() => {
+    return (pos) => {
+      // First chapter whose end passes the absolute position.
+      let lo = 0;
+      while (lo + 1 < chapterOffsets.length && chapterOffsets[lo + 1] <= pos) lo++;
+      const size = chapterSizes[lo] ?? 1;
+      return { index: lo, ratio: Math.max(0, Math.min(1, chapterSizes[lo] ? (pos - chapterOffsets[lo]) / size : 0)) };
+    };
+  }, [chapterOffsets, chapterSizes]);
+  const overall = total > 0 ? (chapterOffsets[current.index] + current.ratio * chapterSizes[current.index]) / bookLength : 0;
+  const lastLoaded = loaded.length ? loaded[loaded.length - 1].index : -1;
+  const firstLoaded = loaded.length ? loaded[0].index : 0;
+
   if (error) {
     const unsupported = error.status === 415;
     return (
@@ -655,31 +687,7 @@ const ReaderPage = () => {
     );
   }
 
-  // Chapter sizes from the server (rendered HTML length) give the progress
-  // bar and seek a proper, per-chapter-weighted scale; chapters default to
-  // equal weights when the sizes are unavailable.
-  const chapterSizes = useMemo(
-    () => meta?.chapters?.map((c) => (typeof c.size === "number" && c.size > 0 ? c.size : 1000)) ?? [],
-    [meta],
-  );
-  const chapterOffsets = useMemo(() => {
-    const out = [0];
-    for (const size of chapterSizes) out.push(out[out.length - 1] + size);
-    return out;
-  }, [chapterSizes]);
-  const bookLength = chapterOffsets[chapterOffsets.length - 1] ?? 0;
-  const chapterByPosition = useMemo(() => {
-    return (pos) => {
-      // First chapter whose end passes the absolute position.
-      let lo = 0;
-      while (lo + 1 < chapterOffsets.length && chapterOffsets[lo + 1] <= pos) lo++;
-      const size = chapterSizes[lo] ?? 1;
-      return { index: lo, ratio: Math.max(0, Math.min(1, chapterSizes[lo] ? (pos - chapterOffsets[lo]) / size : 0)) };
-    };
-  }, [chapterOffsets, chapterSizes]);
-  const overall = total > 0 ? (chapterOffsets[current.index] + current.ratio * chapterSizes[current.index]) / bookLength : 0;
-  const lastLoaded = loaded.length ? loaded[loaded.length - 1].index : -1;
-  const firstLoaded = loaded.length ? loaded[0].index : 0;
+  // Chapter sizes block lives above the early returns (unconditional hooks).
 
   return (
     <div
@@ -919,7 +927,7 @@ const ReaderPage = () => {
                       <button
                         type="button"
                         className="reader__bookmark-jump"
-                        onClick={() => goTo(b.chapter, b.position)}
+                        onClick={() => goTo(b.chapter, b.position, b.locator ?? "")}
                       >
                         <span className="reader__bookmark-label">{b.label || chapterLabel(meta, b.chapter)}</span>
                         <span className="reader__bookmark-pos">{Math.round((b.position ?? 0) * 100)}%</span>

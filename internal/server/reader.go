@@ -279,10 +279,19 @@ func countMatches(lower, needle, plain string) (int, string) {
 	if count == 0 {
 		return 0, ""
 	}
+	// Snippet bounds clamp to the text (a match at the very start or end
+	// has no room for full context).
 	const ctx = 48
 	lo, hi := first-ctx, first+len(needle)+ctx
-	for lo > 0 && plain[lo] != ' ' {
-		lo--
+	if lo < 0 {
+		lo = 0
+	} else {
+		for lo > 0 && plain[lo] != ' ' {
+			lo--
+		}
+		if lo > 0 {
+			lo++
+		}
 	}
 	if hi > len(plain) {
 		hi = len(plain)
@@ -290,9 +299,6 @@ func countMatches(lower, needle, plain string) (int, string) {
 		for hi < len(plain) && plain[hi] != ' ' {
 			hi++
 		}
-	}
-	if lo > 0 {
-		lo++
 	}
 	return count, strings.TrimSpace(plain[lo:hi])
 }

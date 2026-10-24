@@ -9,7 +9,8 @@ func (s *Service) MaxBookID(ctx context.Context) (int64, error) {
 		SELECT max(
 			coalesce((SELECT max(book_id) FROM reading_progress), 0),
 			coalesce((SELECT max(book_id) FROM book_ratings), 0),
-			coalesce((SELECT max(book_id) FROM list_books), 0)
+			coalesce((SELECT max(book_id) FROM list_books), 0),
+			coalesce((SELECT max(book_id) FROM bookmarks), 0)
 		)`).Scan(&maxID)
 	return maxID, err
 }

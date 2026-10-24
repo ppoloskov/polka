@@ -34,8 +34,8 @@ export const fetchSearchSeries = ({ search, selectedGroupID, libraryId } = {}, o
 
 export const fetchSearchGenres = ({ search, libraryId } = {}, opts = {}) => get("getSearchGenres", { search, libraryId }, opts);
 
-export const fetchAuthorBooks = ({ selectedItemID, selectedGroupID, libraryId } = {}) =>
-  get("getSearchAuthorBooks", { selectedItemID, selectedGroupID, libraryId });
+export const fetchAuthorBooks = ({ selectedItemID, selectedGroupID, limit, offset, libraryId } = {}) =>
+  get("getSearchAuthorBooks", { selectedItemID, selectedGroupID, limit, offset, libraryId });
 
 export const fetchSeriesBooks = ({ selectedItemID, selectedGroupID, libraryId } = {}) =>
   get("getSearchSeriesBooks", { selectedItemID, selectedGroupID, libraryId });

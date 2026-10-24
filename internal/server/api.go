@@ -324,13 +324,24 @@ func (s *Server) handleGetAuthorBooks(w http.ResponseWriter, r *http.Request) {
 	// Web author pages paginate; callers without explicit limits keep the
 	// full list so existing clients (including the frontend's single
 	// request) stay compatible until the page adopts the API.
-	limit, offset := intParam(r, "limit", 0), intParam(r, "offset", 0)
-	books, name, err := s.st.AuthorBooksPage(r.Context(), id, limit, offset, r.URL.Query().Get("libraryId"))
+	limitParam, offsetParam := intParam(r, "limit", 0), intParam(r, "offset", 0)
+	books, name, err := s.st.AuthorBooksPage(r.Context(), id, limitParam, offsetParam, r.URL.Query().Get("libraryId"))
 	if err != nil {
 		s.apiError(w, err)
 		return
 	}
-	writeJSON(w, map[string]any{"titlesList": booksJSON(books), "title": name})
+	out := map[string]any{"titlesList": booksJSON(books), "title": name}
+	if limitParam > 0 {
+		// The request asked for one extra row to probe the next page.
+		hasMore := false
+		if len(books) > limitParam {
+			books = books[:limitParam]
+			hasMore = true
+		}
+		out["hasMore"] = hasMore
+		out["nextOffset"] = offsetParam + len(books)
+	}
+	writeJSON(w, out)
 }
 
 func (s *Server) handleGetSeriesBooks(w http.ResponseWriter, r *http.Request) {
