@@ -484,3 +484,14 @@ earlier browsing tag. Evidence:
 `/private/tmp/reader-image3/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
 The digest-pinned live deployment was unchanged by publishing; this tag
 supersedes all earlier browsing tags for deployment.
+
+JPEG XL payload-store delivery on PR #23 (`02f1cbb` / image branch `d50730a`):
+the live dump's images/ sidecar payloads are 96% JPEG XL (sampled
+f.fb2-847580-851189.zip: 27,460 of 28,599 jxl-codestream entries; 1,082
+png, 51 jpeg, 6 webp) — undecodable by browsers and reader devices. The
+download re-embedding now carries the transcoded image (JPEG); ~2% of
+sampled transcodes fail (wazero decoder rejects some variants —
+849006/9 reproduced) and stay verbatim. The reader mattes night/sepia
+illustrations so transparent PNGs (the 4% slice) stop vanishing into the
+dark background. Fixture: testdata/jxl-image.jxl (extracted from the live
+dump, 961 bytes).
