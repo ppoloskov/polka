@@ -342,20 +342,22 @@ func fb2MissingBinaries(data []byte) []string {
 }
 
 // ReembedBinaries inserts the given payloads (fb2 image id -> raw image
-// bytes) as <binary> elements before the closing </FictionBook>. Ids come
-// from the source document and are preserved whole: the elements are emitted
-// with encoding/xml (ids are escaped, never truncated), while unprefixed
-// element and attribute names keep them in the document's default namespace
-// the way existing binaries are written. The image type is sniffed from the
-// bytes (sidecar entries carry no extensions). Returns ErrNoFile when no
-// insertion point is found.
+// bytes) as <binary> elements before the closing </FictionBook>. Every
+// payload goes through normalizeCover first: the Flibusta payload stores
+// are largely JPEG XL, which browsers and reader devices cannot display,
+// so downloads carry the transcoded image (JPEG XL stays verbatim only
+// when transcoding fails). Ids come from the source document and are
+// preserved whole: the elements are emitted with encoding/xml (ids are
+// escaped, never truncated), while unprefixed element and attribute names
+// keep them in the document's default namespace the way existing binaries
+// are written. Returns ErrNoFile when no insertion point is found.
 func ReembedBinaries(data []byte, ids []string, payloads map[string][]byte) ([]byte, error) {
 	cut := bytes.LastIndex(data, []byte("</FictionBook>"))
 	if cut < 0 {
 		return nil, ErrNoFile
 	}
 	var buf bytes.Buffer
-	buf.Grow(len(data) + 256)
+	buf.Grow(len(data) + 512)
 	buf.Write(data[:cut])
 	enc := xml.NewEncoder(&buf)
 	for _, id := range ids {
@@ -363,6 +365,7 @@ func ReembedBinaries(data []byte, ids []string, payloads map[string][]byte) ([]b
 		if !ok || len(payload) == 0 {
 			continue
 		}
+		payload, _ = normalizeCover(payload, sniffImageMime(payload))
 		start := xml.StartElement{
 			Name: xml.Name{Local: "binary"},
 			Attr: []xml.Attr{
