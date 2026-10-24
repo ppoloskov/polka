@@ -290,6 +290,12 @@ func (im *ImportSession) addBook(bookID int64, b *BookInput) error {
 	if err != nil {
 		return fmt.Errorf("book %q: %w", b.Title, err)
 	}
+	return im.addBookRelations(bookID, b, series)
+}
+
+// addBookRelations inserts a book's series/author/genre/keyword rows using
+// this session's prepared statements and lookup caches.
+func (im *ImportSession) addBookRelations(bookID int64, b *BookInput, series []SeriesRef) error {
 	for position, ref := range series {
 		id, err := lookup(im.series, ref.Title, im.stmts.series)
 		if err != nil {

@@ -329,6 +329,228 @@ func snapshotBookIDNoFail(st *Store, libraryID, key string) (int64, error) {
 	return id, err
 }
 
+// A staged inpx:v2 group rebinds the per-series v1 rows of its file: the
+// lowest-ID row wins and keeps its identity with the merged content, the rest
+// retire to missing and leave the search index.
+func TestPublishLibraryConsolidatesInpxV1RowsIntoV2Group(t *testing.T) {
+	st, ctx := snapshotStore(t)
+	libraryID := snapshotLibrary(t, st, ctx, "consolidated")
+
+	alpha := snapshotEntry("inpx:v1:alpha", "Series book")
+	alpha.book.File = "multi"
+	alpha.book.Series = "Alpha"
+	alpha.book.SeriesNum = 1
+	beta := snapshotEntry("inpx:v1:beta", "Series book")
+	beta.book.File = "multi"
+	beta.book.Series = "Beta"
+	beta.book.SeriesNum = 2
+	single := snapshotEntry("inpx:v1:single", "Old title")
+	single.book.File = "single"
+	single.book.Series = "OldSeries"
+	if err := publishTestSnapshot(t, st, ctx, libraryID, alpha, beta, single); err != nil {
+		t.Fatal(err)
+	}
+	winnerID := snapshotBookID(t, st, libraryID, "inpx:v1:alpha")
+	loserID := snapshotBookID(t, st, libraryID, "inpx:v1:beta")
+	singleID := snapshotBookID(t, st, libraryID, "inpx:v1:single")
+	if winnerID >= loserID {
+		t.Fatalf("fixture IDs out of order: winner %d, loser %d", winnerID, loserID)
+	}
+	if !snapshotSearchIndexed(t, st, loserID) {
+		t.Fatal("fixture loser was never indexed")
+	}
+
+	group := snapshotEntry("inpx:v2:group", "Series book (union)")
+	group.book.File = "multi"
+	group.book.Series = "Alpha"
+	group.book.SeriesNum = 1
+	group.book.SeriesList = []SeriesRef{{Title: "Alpha", SeqNumber: 1}, {Title: "Beta", SeqNumber: 2}}
+	group.book.Year = 2020
+	renamed := snapshotEntry("inpx:v2:single", "New title")
+	renamed.book.File = "single"
+	renamed.book.Series = "NewSeries"
+	renamed.book.SeriesNum = 3
+	snap := newTestSnapshot(t, ctx, group, renamed)
+	stats, err := st.PublishLibrary(ctx, libraryID, snap, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Added != 0 || stats.Changed != 2 || stats.Removed != 1 || stats.Unchanged != 0 {
+		t.Fatalf("consolidation stats = %+v, want 2 rekeys, 1 swept loser", stats)
+	}
+	if len(stats.ConsolidatedIDs) != 1 || stats.ConsolidatedIDs[loserID] != winnerID {
+		t.Fatalf("consolidation pairs = %v, want %d -> %d", stats.ConsolidatedIDs, loserID, winnerID)
+	}
+
+	// The winner keeps its ID, takes the v2 key and the merged metadata.
+	if got := snapshotBookID(t, st, libraryID, "inpx:v2:group"); got != winnerID {
+		t.Fatalf("rekeyed group ID = %d, want kept winner ID %d", got, winnerID)
+	}
+	gotID, missing, deleted := snapshotState(t, st, libraryID, "inpx:v2:group")
+	if gotID != winnerID || missing != 0 || deleted != 0 {
+		t.Fatalf("rekeyed winner state = id %d missing %d deleted %d", gotID, missing, deleted)
+	}
+	var title string
+	var year int
+	if err := st.DB().QueryRow(`SELECT title, year FROM books WHERE id=?`, winnerID).Scan(&title, &year); err != nil {
+		t.Fatal(err)
+	}
+	if title != "Series book (union)" || year != 2020 {
+		t.Fatalf("rekeyed winner metadata = %q (%d), want merged group content", title, year)
+	}
+	refs, err := st.BookSeries(ctx, winnerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 2 || refs[0].Title != "Alpha" || refs[1].Title != "Beta" {
+		t.Fatalf("winner series = %+v, want merged Alpha and Beta", refs)
+	}
+	if !snapshotSearchIndexed(t, st, winnerID) {
+		t.Fatal("rekeyed winner is missing from the search index")
+	}
+
+	// Losers keep their absent v1 keys: swept to missing, out of the index.
+	gotID, missing, deleted = snapshotState(t, st, libraryID, "inpx:v1:beta")
+	if gotID != loserID || missing != 1 || deleted != 0 {
+		t.Fatalf("loser state = id %d missing %d deleted %d, want retained missing", gotID, missing, deleted)
+	}
+	if snapshotSearchIndexed(t, st, loserID) {
+		t.Fatal("loser remained in the search index")
+	}
+
+	// A single matching row rekeys in place too, updating metadata and series.
+	if got := snapshotBookID(t, st, libraryID, "inpx:v2:single"); got != singleID {
+		t.Fatalf("single-match rekey ID = %d, want kept ID %d", got, singleID)
+	}
+	refs, err = st.BookSeries(ctx, singleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 1 || refs[0].Title != "NewSeries" || refs[0].SeqNumber != 3 {
+		t.Fatalf("single-match series = %+v, want NewSeries #3", refs)
+	}
+	if _, err := snapshotBookIDNoFail(st, libraryID, "inpx:v1:single"); err == nil {
+		t.Fatal("single-match row kept its old v1 key after rekey")
+	}
+}
+
+// A consolidation winner that was already missing is restored by the rekey.
+func TestPublishLibraryConsolidationRestoresMissingV1Winner(t *testing.T) {
+	st, ctx := snapshotStore(t)
+	libraryID := snapshotLibrary(t, st, ctx, "restore")
+	gone := snapshotEntry("inpx:v1:gone", "Gone book")
+	gone.book.File = "gone"
+	if err := publishTestSnapshot(t, st, ctx, libraryID, gone); err != nil {
+		t.Fatal(err)
+	}
+	goneID := snapshotBookID(t, st, libraryID, "inpx:v1:gone")
+	if err := publishTestSnapshot(t, st, ctx, libraryID, snapshotEntry("record:unrelated", "Unrelated")); err != nil {
+		t.Fatal(err)
+	}
+	if _, missing, _ := snapshotState(t, st, libraryID, "inpx:v1:gone"); missing != 1 {
+		t.Fatal("fixture row was not retired to missing")
+	}
+	if snapshotSearchIndexed(t, st, goneID) {
+		t.Fatal("missing fixture row stayed in the search index")
+	}
+
+	group := snapshotEntry("inpx:v2:gone", "Gone book")
+	group.book.File = "gone"
+	snap := newTestSnapshot(t, ctx, group, snapshotEntry("record:unrelated", "Unrelated"))
+	stats, err := st.PublishLibrary(ctx, libraryID, snap, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Changed != 1 || stats.Unchanged != 1 {
+		t.Fatalf("restore consolidation stats = %+v, want 1 changed 1 unchanged", stats)
+	}
+	gotID, missing, _ := snapshotState(t, st, libraryID, "inpx:v2:gone")
+	if gotID != goneID || missing != 0 {
+		t.Fatalf("restored winner = id %d missing %d, want id %d missing 0", gotID, missing, goneID)
+	}
+	if !snapshotSearchIndexed(t, st, goneID) {
+		t.Fatal("restored winner is missing from the search index")
+	}
+	if len(stats.ConsolidatedIDs) != 0 {
+		t.Fatalf("single-row consolidation reported pairs: %v", stats.ConsolidatedIDs)
+	}
+}
+
+// A staged inpx:v2 group without same-file v1 rows follows the normal
+// new-book path and reports no consolidation pairs.
+func TestPublishLibraryInpxV2WithoutV1MatchInsertsNew(t *testing.T) {
+	st, ctx := snapshotStore(t)
+	libraryID := snapshotLibrary(t, st, ctx, "fresh-v2")
+	group := snapshotEntry("inpx:v2:fresh", "Fresh group")
+	group.book.File = "fresh"
+	snap := newTestSnapshot(t, ctx, group)
+	stats, err := st.PublishLibrary(ctx, libraryID, snap, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Added != 1 || stats.Changed != 0 || stats.ConsolidatedIDs != nil {
+		t.Fatalf("no-match v2 stats = %+v (pairs %v), want one plain insert", stats, stats.ConsolidatedIDs)
+	}
+	if !snapshotSearchIndexed(t, st, snapshotBookID(t, st, libraryID, "inpx:v2:fresh")) {
+		t.Fatal("new v2 group is missing from the search index")
+	}
+
+	// A v1 row of a different file is not a consolidation candidate.
+	other := snapshotEntry("inpx:v1:other-file", "Other file")
+	other.book.File = "other"
+	if err := publishTestSnapshot(t, st, ctx, libraryID, group, other); err != nil {
+		t.Fatal(err)
+	}
+	moved := snapshotEntry("inpx:v2:moved", "Moved group")
+	moved.book.File = "elsewhere"
+	snap = newTestSnapshot(t, ctx, group, other, moved)
+	stats, err = st.PublishLibrary(ctx, libraryID, snap, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Added != 1 || stats.Changed != 0 || stats.Unchanged != 2 || stats.ConsolidatedIDs != nil {
+		t.Fatalf("different-file v2 stats = %+v (pairs %v), want one plain insert", stats, stats.ConsolidatedIDs)
+	}
+}
+
+// Same-name files in different formats are different books: consolidation
+// binds by exact (folder, file, ext) and never crosses formats.
+func TestPublishLibraryConsolidationKeepsFormatsSeparate(t *testing.T) {
+	st, ctx := snapshotStore(t)
+	libraryID := snapshotLibrary(t, st, ctx, "formats")
+
+	fb2 := snapshotEntry("inpx:v1:fmt-fb2", "Same name")
+	fb2.book.File = "dup"
+	epub := snapshotEntry("inpx:v1:fmt-epub", "Same name")
+	epub.book.File = "dup"
+	epub.book.Ext = "epub"
+	if err := publishTestSnapshot(t, st, ctx, libraryID, fb2, epub); err != nil {
+		t.Fatal(err)
+	}
+	fb2ID := snapshotBookID(t, st, libraryID, "inpx:v1:fmt-fb2")
+	epubID := snapshotBookID(t, st, libraryID, "inpx:v1:fmt-epub")
+
+	fb2Group := snapshotEntry("inpx:v2:fmt-fb2", "Same name")
+	fb2Group.book.File = "dup"
+	epubGroup := snapshotEntry("inpx:v2:fmt-epub", "Same name")
+	epubGroup.book.File = "dup"
+	epubGroup.book.Ext = "epub"
+	snap := newTestSnapshot(t, ctx, fb2Group, epubGroup)
+	stats, err := st.PublishLibrary(ctx, libraryID, snap, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Added != 0 || stats.Changed != 2 || stats.Removed != 0 || len(stats.ConsolidatedIDs) != 0 {
+		t.Fatalf("format consolidation stats = %+v (pairs %v), want two in-place rekeys", stats, stats.ConsolidatedIDs)
+	}
+	if got := snapshotBookID(t, st, libraryID, "inpx:v2:fmt-fb2"); got != fb2ID {
+		t.Fatalf("fb2 group rebound to ID %d, want the fb2 row %d", got, fb2ID)
+	}
+	if got := snapshotBookID(t, st, libraryID, "inpx:v2:fmt-epub"); got != epubID {
+		t.Fatalf("epub group rebound to ID %d, want the epub row %d", got, epubID)
+	}
+}
+
 func TestPublishLibraryRejectsExhaustedBookIDRange(t *testing.T) {
 	st, ctx := snapshotStore(t)
 	libraryID := snapshotLibrary(t, st, ctx, "exhausted-ids")
