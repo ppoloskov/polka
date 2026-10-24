@@ -495,3 +495,16 @@ sampled transcodes fail (wazero decoder rejects some variants —
 illustrations so transparent PNGs (the 4% slice) stop vanishing into the
 dark background. Fixture: testdata/jxl-image.jxl (extracted from the live
 dump, 961 bytes).
+
+JPEG XL image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-d50730a`
+resolves to `sha256:ad8c62b7f3391151e110e902733cf2e48ca2c443ae11e7fa22480f2f205aeed4`
+for Linux/amd64, built from `codex/image-libraries-browsing` commit `d50730a`
+(the browsing stack through the reader experience + the JPEG XL payload
+store handling). Registry digest matched the build metadata and differs
+from all earlier browsing tags. Evidence:
+`/private/tmp/jxl-image/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+The digest-pinned live deployment was unchanged by publishing; this tag
+supersedes all earlier browsing tags for deployment — the live pin
+(849ed2bc, the reader core) predates the round-4/5 fixes and the JXL
+handling.
