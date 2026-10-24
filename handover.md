@@ -459,3 +459,28 @@ Review round 5 on PR #23 (`6511c14` / branch `ab01482`):
   sticky-cwd `git add -A`; recovered with `git reset 1dc5773` (the dirty
   working state is identical), the commit object is dangling and was never
   pushed. The round-5 work was then committed in the worktree correctly.
+
+Review-round follow-up (post round-5): the primary checkout was restored to
+a buildable, tested state after the incident recovery — `npm run build`
+reproduces `index-C4L1KZe8.js` deterministically (its suite passes 34/8).
+The byte-level difference versus the pre-incident bundle (B4HNniqO) remains
+unexplained: the primary is the user's active workspace, and its 18:58
+bundle may reflect their own edits from that window (the user-critical
+features — BookCard author links, BookListPage list-view/grouping,
+SearchPage views — are all present). Known harmless strays left in place:
+round-3 i18n keys, an appended-but-unused search/bookmark API block in
+web/src/api/reader.js, and extraneous fontsource directories in
+web/node_modules (all documented; remove on the user's request).
+
+Round-5 image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-ab01482`
+resolves to `sha256:13faeff68d42e4ab9380ceafa737708fbf1fbe48b8ff01337e4bff92fd7d1190`
+for Linux/amd64, built from `codex/image-libraries-browsing` commit `ab01482`
+(the browsing stack through the reader experience with review rounds 4 and
+5: author hasMore probe fixed, scoped-count deltas and Clear reset
+complete, end-of-span locators, PDF save banner, stdlib-HTML-stripper
+search). Registry digest matched the build metadata and differs from every
+earlier browsing tag. Evidence:
+`/private/tmp/reader-image3/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+The digest-pinned live deployment was unchanged by publishing; this tag
+supersedes all earlier browsing tags for deployment.
