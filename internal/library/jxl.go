@@ -7,6 +7,9 @@ package library
 
 import (
 	"bytes"
+	"image"
+	"image/color"
+	"image/draw"
 	"image/jpeg"
 
 	"github.com/gen2brain/jpegxl"
@@ -22,17 +25,41 @@ func isJXL(d []byte) bool {
 		[]byte{0x00, 0x00, 0x00, 0x0C, 'J', 'X', 'L', ' ', 0x0D, 0x0A, 0x87, 0x0A})
 }
 
-// jxlToJPEG decodes JXL and re-encodes it as JPEG.
+// jxlToJPEG decodes JXL and re-encodes it as JPEG. Images with an alpha
+// channel are composited onto white first: JPEG has no alpha, and encoding
+// a transparent image directly fills the transparent pixels with black —
+// covers and illustrations on white paper otherwise turn into black pages.
 func jxlToJPEG(d []byte) ([]byte, string, error) {
 	img, err := jpegxl.Decode(bytes.NewReader(d))
 	if err != nil {
 		return nil, "", err
+	}
+	if hasAlpha(img) {
+		img = compositeOnWhite(img)
 	}
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 82}); err != nil {
 		return nil, "", err
 	}
 	return buf.Bytes(), "image/jpeg", nil
+}
+
+// hasAlpha reports whether the decoded image model can carry transparency.
+func hasAlpha(img image.Image) bool {
+	switch img.(type) {
+	case *image.NRGBA, *image.RGBA, *image.NRGBA64, *image.RGBA64:
+		return true
+	}
+	return false
+}
+
+// compositeOnWhite draws the source over an opaque white background.
+func compositeOnWhite(src image.Image) image.Image {
+	b := src.Bounds()
+	dst := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+	draw.Draw(dst, dst.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
+	draw.Draw(dst, dst.Bounds(), src, b.Min, draw.Over)
+	return dst
 }
 
 // normalizeCover converts a cover into something browsers understand: JXL is
