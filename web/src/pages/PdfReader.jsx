@@ -53,7 +53,7 @@ const PdfReader = ({ bookId, meta }) => {
   const persist = (page) => {
     const overall = numPages > 0 ? page / numPages : 0;
     if (serverStored.current) {
-      saveProgress(bookId, page, 0, overall, "");
+      saveProgress(bookId, page, 0, overall, "").catch(() => {});
     } else {
       localProgress.set(bookId, page, 0);
     }
