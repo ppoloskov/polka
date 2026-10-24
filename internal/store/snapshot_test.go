@@ -551,6 +551,110 @@ func TestPublishLibraryConsolidationKeepsFormatsSeparate(t *testing.T) {
 	}
 }
 
+// A single-member group whose member hash equals the winner's v1 key is a
+// pure key-swap: no content rewrite, so metadata learned after the original
+// import (ISBNs, reader-added series) survives the consolidation.
+func TestPublishLibraryConsolidationKeySwapPreservesContent(t *testing.T) {
+	st, ctx := snapshotStore(t)
+	libraryID := snapshotLibrary(t, st, ctx, "keyswap")
+
+	solo := snapshotEntry("inpx:v1:aaa", "Solo book")
+	solo.book.File = "solo"
+	solo.book.Series = "Indexed"
+	solo.book.SeriesNum = 1
+	if err := publishTestSnapshot(t, st, ctx, libraryID, solo); err != nil {
+		t.Fatal(err)
+	}
+	winnerID := snapshotBookID(t, st, libraryID, "inpx:v1:aaa")
+	if _, err := st.DB().Exec(`UPDATE books SET isbn='9781234567890' WHERE id=?`, winnerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddBookSeries(ctx, winnerID, []SeriesRef{{Title: "Learned", SeqNumber: 4}}); err != nil {
+		t.Fatal(err)
+	}
+
+	group := snapshotEntry("inpx:v2:solo", "Solo book")
+	group.book.File = "solo"
+	group.book.Series = "Indexed"
+	group.book.SeriesNum = 1
+	snap, err := NewSnapshot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = snap.Close() })
+	if err := snap.add(ctx, "inpx:v2:solo", group.book, `["aaa"]`); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := st.PublishLibrary(ctx, libraryID, snap, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Changed != 1 || stats.Added != 0 || len(stats.ConsolidatedIDs) != 0 {
+		t.Fatalf("key-swap stats = %+v, want one rekey and no losers", stats)
+	}
+
+	// Identity moves, content and learned metadata stay exactly as they were.
+	if got := snapshotBookID(t, st, libraryID, "inpx:v2:solo"); got != winnerID {
+		t.Fatalf("key-swap rebound ID = %d, want %d", got, winnerID)
+	}
+	var title, isbn string
+	if err := st.DB().QueryRow(`SELECT title, isbn FROM books WHERE id=?`, winnerID).Scan(&title, &isbn); err != nil {
+		t.Fatal(err)
+	}
+	if title != "Solo book" || isbn != "9781234567890" {
+		t.Fatalf("key-swap row = %q isbn %q, want untouched content", title, isbn)
+	}
+	refs, err := st.BookSeries(ctx, winnerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 2 {
+		t.Fatalf("key-swap series = %+v, want indexed and learned entries", refs)
+	}
+	if !snapshotSearchIndexed(t, st, winnerID) {
+		t.Fatal("key-swap winner lost its search row")
+	}
+}
+
+// A single-member group whose member hash differs from the winner's v1 key
+// carries changed metadata: the full rewrite path applies it.
+func TestPublishLibraryConsolidationRewriteOnChangedMember(t *testing.T) {
+	st, ctx := snapshotStore(t)
+	libraryID := snapshotLibrary(t, st, ctx, "rewrite")
+
+	old := snapshotEntry("inpx:v1:aaa", "Old title")
+	old.book.File = "changed"
+	if err := publishTestSnapshot(t, st, ctx, libraryID, old); err != nil {
+		t.Fatal(err)
+	}
+	winnerID := snapshotBookID(t, st, libraryID, "inpx:v1:aaa")
+
+	group := snapshotEntry("inpx:v2:changed", "New title")
+	group.book.File = "changed"
+	snap, err := NewSnapshot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = snap.Close() })
+	if err := snap.add(ctx, "inpx:v2:changed", group.book, `["bbb"]`); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := st.PublishLibrary(ctx, libraryID, snap, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Changed != 1 || stats.Added != 0 {
+		t.Fatalf("changed-member stats = %+v, want one rekey", stats)
+	}
+	var title string
+	if err := st.DB().QueryRow(`SELECT title FROM books WHERE id=?`, winnerID).Scan(&title); err != nil {
+		t.Fatal(err)
+	}
+	if title != "New title" {
+		t.Fatalf("changed-member title = %q, want the staged metadata", title)
+	}
+}
+
 func TestPublishLibraryRejectsExhaustedBookIDRange(t *testing.T) {
 	st, ctx := snapshotStore(t)
 	libraryID := snapshotLibrary(t, st, ctx, "exhausted-ids")

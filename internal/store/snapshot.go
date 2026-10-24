@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/vestigiumincaligne/polka/internal/sqlitedrv"
@@ -80,7 +81,7 @@ func NewSnapshot(dir string) (*Snapshot, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`CREATE TABLE records (source_key TEXT PRIMARY KEY, book_json BLOB NOT NULL) WITHOUT ROWID`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE records (source_key TEXT PRIMARY KEY, book_json BLOB NOT NULL, members TEXT NOT NULL DEFAULT '') WITHOUT ROWID`); err != nil {
 		db.Close()
 		os.RemoveAll(tempDir)
 		return nil, err
@@ -101,7 +102,7 @@ func NewSnapshot(dir string) (*Snapshot, error) {
 		os.RemoveAll(tempDir)
 		return nil, err
 	}
-	insert, err := tx.Prepare(`INSERT INTO records (source_key, book_json) VALUES (?, ?)`)
+	insert, err := tx.Prepare(`INSERT INTO records (source_key, book_json, members) VALUES (?, ?, ?)`)
 	if err != nil {
 		tx.Rollback()
 		db.Close()
@@ -122,7 +123,15 @@ func NewSnapshot(dir string) (*Snapshot, error) {
 // Add stages one source record. key must represent immutable source identity;
 // source metadata corrections must use a new key. Any invalid row poisons the
 // snapshot, so a caller cannot accidentally publish an incomplete enumeration.
+// Add stages one source record. key must represent immutable source identity;
+// a matching key at publish keeps the row, a new key adds one.
 func (s *Snapshot) Add(ctx context.Context, key string, b *BookInput) error {
+	return s.add(ctx, key, b, "")
+}
+
+// add is Add with optional group member hashes (INPX file groups): publish
+// uses them to recognize a surviving row that already holds the exact record.
+func (s *Snapshot) add(ctx context.Context, key string, b *BookInput, members string) error {
 	if s == nil || s.closed {
 		return errors.New("snapshot is closed")
 	}
@@ -145,7 +154,7 @@ func (s *Snapshot) Add(ctx context.Context, key string, b *BookInput) error {
 	if err != nil {
 		return s.fail(err)
 	}
-	if _, err := s.insert.ExecContext(ctx, key, data); err != nil {
+	if _, err := s.insert.ExecContext(ctx, key, data, members); err != nil {
 		return s.fail(fmt.Errorf("stage source key %q: %w", key, err))
 	}
 	return nil
@@ -228,7 +237,16 @@ func (s *Snapshot) CollapseInpxLines(ctx context.Context, merge func(members []S
 		if err != nil {
 			return s.fail(err)
 		}
-		if err := s.Add(ctx, key, &book); err != nil {
+		hashes := make([]string, 0, len(members))
+		for _, member := range members {
+			hashes = append(hashes, member.Hash)
+		}
+		sort.Strings(hashes)
+		memberJSON, err := json.Marshal(hashes)
+		if err != nil {
+			return s.fail(err)
+		}
+		if err := s.add(ctx, key, &book, string(memberJSON)); err != nil {
 			return err
 		}
 		groups++
@@ -335,6 +353,7 @@ func (s *Snapshot) Close() error {
 
 // INPX source key versions: inpx:v1 fingerprinted every index line, inpx:v2
 // fingerprints the sorted member hashes of one file's group of lines.
+const inpxV1KeyPrefix = "inpx:v1:"
 const inpxV2KeyPrefix = "inpx:v2:"
 
 // PublishLibrary atomically applies a complete source snapshot to one library.
@@ -394,7 +413,7 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 	if _, err := tx.ExecContext(ctx, `UPDATE books SET missing=2 WHERE library_id=? AND source_key!='' AND missing=0`, libraryID); err != nil {
 		return stats, err
 	}
-	rows, err := snapshot.db.QueryContext(ctx, `SELECT source_key, book_json FROM records ORDER BY source_key`)
+	rows, err := snapshot.db.QueryContext(ctx, `SELECT source_key, book_json, members FROM records ORDER BY source_key`)
 	if err != nil {
 		return stats, err
 	}
@@ -403,9 +422,9 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 		if err := ctx.Err(); err != nil {
 			return stats, err
 		}
-		var key string
+		var key, membersJSON string
 		var data []byte
-		if err := rows.Scan(&key, &data); err != nil {
+		if err := rows.Scan(&key, &data, &membersJSON); err != nil {
 			return stats, err
 		}
 		var book BookInput
@@ -429,26 +448,43 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 				return stats, lookupErr
 			}
 			if len(group) > 0 {
-				if writer == nil {
-					writer, maxAuthorID, maxSeriesID, err = newImportSessionForTx(s, ctx, tx)
-					if err != nil {
-						return stats, err
+				var members []string
+				if membersJSON != "" {
+					if err := json.Unmarshal([]byte(membersJSON), &members); err != nil {
+						return stats, fmt.Errorf("read group members %q: %w", key, err)
 					}
 				}
-				if err := rekeyInpxGroup(ctx, tx, writer, key, &book, group[0]); err != nil {
-					return stats, err
+				if len(members) == 1 && group[0].Key == inpxV1KeyPrefix+members[0] {
+					// Key-swap fast path: the winner's v1 key is the content
+					// hash of the group's only line, so the row already holds
+					// exactly this record — including metadata learned after
+					// the original import, which a content rewrite would
+					// destroy. Only the identity changes.
+					if _, err := tx.ExecContext(ctx, `UPDATE books SET source_key=?, missing=? WHERE id=?`, key, boolToInt(book.Deleted), group[0].ID); err != nil {
+						return stats, err
+					}
+				} else {
+					if writer == nil {
+						writer, maxAuthorID, maxSeriesID, err = newImportSessionForTx(s, ctx, tx)
+						if err != nil {
+							return stats, err
+						}
+					}
+					if err := rekeyInpxGroup(ctx, tx, writer, key, &book, group[0].ID); err != nil {
+						return stats, err
+					}
 				}
 				rekeyed++
 				// The rebound row now carries its v2 key; keep the temp probe
 				// consistent so a same-(folder, file) probe cannot rebind it.
-				if _, err := tx.ExecContext(ctx, `DELETE FROM polka_v1_files WHERE id=?`, group[0]); err != nil {
+				if _, err := tx.ExecContext(ctx, `DELETE FROM polka_v1_files WHERE id=?`, group[0].ID); err != nil {
 					return stats, err
 				}
 				for _, loser := range group[1:] {
 					if stats.ConsolidatedIDs == nil {
 						stats.ConsolidatedIDs = make(map[int64]int64)
 					}
-					stats.ConsolidatedIDs[loser] = group[0]
+					stats.ConsolidatedIDs[loser.ID] = group[0].ID
 				}
 				stats.Changed++
 				continue
@@ -631,12 +667,12 @@ func prepareInpxV1Probe(ctx context.Context, tx *sql.Tx, libraryID string) error
 	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS polka_v1_files`); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE polka_v1_files (folder TEXT NOT NULL, file TEXT NOT NULL, ext TEXT NOT NULL, id INTEGER NOT NULL)`); err != nil {
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE polka_v1_files (folder TEXT NOT NULL, file TEXT NOT NULL, ext TEXT NOT NULL, id INTEGER NOT NULL, source_key TEXT NOT NULL)`); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO polka_v1_files
-		SELECT f.name, b.file, b.ext, b.id FROM books b JOIN folders f ON f.id=b.folder_id
+		SELECT f.name, b.file, b.ext, b.id, b.source_key FROM books b JOIN folders f ON f.id=b.folder_id
 		WHERE b.library_id=? AND b.source_key GLOB 'inpx:v1:*' AND b.deleted=0`, libraryID); err != nil {
 		return err
 	}
@@ -644,23 +680,30 @@ func prepareInpxV1Probe(ctx context.Context, tx *sql.Tx, libraryID string) error
 	return err
 }
 
+// inpxV1Row is one live per-series v1 row of a file, with its key so a
+// consolidation can recognize a row that already holds the staged record.
+type inpxV1Row struct {
+	ID  int64
+	Key string
+}
+
 // findInpxV1Group returns the live per-series v1 rows of one file, lowest ID
 // first: the exact consolidation candidates for a staged inpx:v2 group.
-func findInpxV1Group(ctx context.Context, tx *sql.Tx, folder, file, ext string) ([]int64, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM polka_v1_files WHERE folder=? AND file=? AND ext=? ORDER BY id`, folder, file, ext)
+func findInpxV1Group(ctx context.Context, tx *sql.Tx, folder, file, ext string) ([]inpxV1Row, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id, source_key FROM polka_v1_files WHERE folder=? AND file=? AND ext=? ORDER BY id`, folder, file, ext)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var ids []int64
+	var out []inpxV1Row
 	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var row inpxV1Row
+		if err := rows.Scan(&row.ID, &row.Key); err != nil {
 			return nil, err
 		}
-		ids = append(ids, id)
+		out = append(out, row)
 	}
-	return ids, rows.Err()
+	return out, rows.Err()
 }
 
 // rekeyInpxGroup binds the winner (lowest-ID v1 row of one file) to the staged
