@@ -383,6 +383,15 @@
   height: auto;
 }
 
+/* Transparent illustrations vanish into dark themes: matte them on a light
+   background so their own dark strokes stay visible. */
+.reader--night .reader__content img,
+.reader--sepia .reader__content img {
+  background: #fff;
+  border-radius: 0.25rem;
+  padding: 2px;
+}
+
 .reader__content .fb2-img {
   display: block;
   max-width: 100%;
