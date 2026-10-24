@@ -158,6 +158,8 @@ func (s *Store) RecommendForUser(ctx context.Context, seedIDs, excludeIDs []int6
 	}
 
 	// Top-rated in favorite genres (genres are counted by frequency among seeds)
+	// The EXISTS probe keeps the plan on idx_books_rate with early LIMIT
+	// termination; an IN-subquery materializes and sorts every genre member.
 	qGenres := fmt.Sprintf(`
 		WITH fav_genres AS (
 			SELECT genre_id FROM book_genres WHERE book_id IN (%s)
@@ -166,7 +168,7 @@ func (s *Store) RecommendForUser(ctx context.Context, seedIDs, excludeIDs []int6
 		SELECT b.id FROM books b
 		WHERE b.lib_rate >= 4 AND b.deleted = 0 AND b.missing = 0
 			AND EXISTS (SELECT 1 FROM libraries l WHERE l.id = b.library_id AND l.enabled = 1)
-			AND b.id IN (SELECT book_id FROM book_genres JOIN fav_genres USING (genre_id))
+			AND EXISTS (SELECT 1 FROM book_genres bg JOIN fav_genres fg ON fg.genre_id = bg.genre_id WHERE bg.book_id = b.id)
 			AND b.id NOT IN (%s) %s %s
 		ORDER BY b.lib_rate DESC, b.id DESC LIMIT %d`,
 		placeholders(len(seedIDs)), placeholders2(len(seedIDs), len(seedIDs)),

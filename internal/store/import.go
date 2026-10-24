@@ -398,6 +398,7 @@ func (im *ImportSession) Finish() (ImportStats, error) {
 	im.stats.Series = len(im.series)
 	im.stats.Genres = len(im.genres)
 	im.stats.Duration = time.Since(im.start)
+	im.s.invalidateBookCount()
 	return im.stats, nil
 }
 

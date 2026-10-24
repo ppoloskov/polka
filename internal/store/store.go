@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/vestigiumincaligne/polka/internal/sqlitedrv"
 )
@@ -14,11 +16,19 @@ import (
 type Store struct {
 	db     *sql.DB
 	readDB *sql.DB
+
+	countMu    sync.Mutex
+	countCache int
+	countAt    time.Time
+	countValid bool
 }
 
 func Open(path string) (*Store, error) {
 	opts := sqlitedrv.Options{
 		WAL: true, SyncNormal: true, BusyTimeout: 10000, ForeignKeys: true,
+		// 64 MiB page cache per connection: the catalog is far larger than
+		// the SQLite default cache, and hot read paths re-read the same pages.
+		CacheSizeKiB: 65536,
 	}
 	db, err := sqlitedrv.Open(path, opts)
 	if err != nil {
@@ -127,6 +137,38 @@ func (s *Store) BookCount(ctx context.Context) (int, error) {
 		SELECT count(*) FROM books b JOIN libraries l ON l.id = b.library_id
 		WHERE b.deleted = 0 AND b.missing = 0 AND l.enabled = 1`).Scan(&n)
 	return n, err
+}
+
+// visibleBookCountTTL bounds how long the cached visible count can go
+// unchanged before a recompute; catalog mutations invalidate it eagerly.
+const visibleBookCountTTL = time.Minute
+
+// VisibleBookCount is BookCount behind a short-lived cache: the home/config
+// endpoints ask for it on every page load, and the full visible-set scan is
+// one of the most expensive reads on large catalogs.
+func (s *Store) VisibleBookCount(ctx context.Context) (int, error) {
+	s.countMu.Lock()
+	if s.countValid && time.Since(s.countAt) < visibleBookCountTTL {
+		n := s.countCache
+		s.countMu.Unlock()
+		return n, nil
+	}
+	s.countMu.Unlock()
+	n, err := s.BookCount(ctx)
+	if err != nil {
+		return 0, err
+	}
+	s.countMu.Lock()
+	s.countCache, s.countAt, s.countValid = n, time.Now(), true
+	s.countMu.Unlock()
+	return n, nil
+}
+
+// invalidateBookCount drops the cached visible count after a catalog change.
+func (s *Store) invalidateBookCount() {
+	s.countMu.Lock()
+	s.countValid = false
+	s.countMu.Unlock()
 }
 
 func (s *Store) GetMeta(ctx context.Context, key, def string) string {

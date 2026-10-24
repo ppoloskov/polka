@@ -605,6 +605,7 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 	if err := tx.Commit(); err != nil {
 		return stats, err
 	}
+	s.invalidateBookCount()
 	// Refresh planner statistics after a large publish. The catalog is
 	// already committed, so an ANALYZE failure is not fatal.
 	_, _ = s.db.ExecContext(ctx, `ANALYZE`)

@@ -25,5 +25,8 @@ func dsn(path string, o Options) string {
 	if o.ForeignKeys {
 		p = append(p, "_pragma=foreign_keys(ON)")
 	}
+	if o.CacheSizeKiB > 0 {
+		p = append(p, fmt.Sprintf("_pragma=cache_size(-%d)", o.CacheSizeKiB))
+	}
 	return "file:" + path + "?" + strings.Join(p, "&")
 }
