@@ -436,3 +436,26 @@ browsing tag. Evidence:
 `/private/tmp/reader-image/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
 The digest-pinned live deployment was unchanged by publishing; this tag
 supersedes all earlier browsing tags for deployment.
+
+Review round 5 on PR #23 (`6511c14` / branch `ab01482`):
+- The author endpoint fetches `limit+1` and trims before serializing (the
+  earlier code fetched exactly `limit`, so `hasMore` was always false); the
+  author page's load-more button is enabled. Probed at limit 2/3.
+- Deletion deltas accumulate across the whole genre set (the scoped map was
+  recreated per code, retaining only the last genre); Clear resets every
+  library's scoped genre list transactionally. Probes: disabled-library
+  deletion with two genres, Clear with a scoped key present.
+- `segmentAt` resolves the total-length offset to the end of the last text
+  node — capture results at the very end of a highlighted span restore
+  exactly (the restore used to fail and fall back). Covered by the
+  mark-fragment regression test at the span's total length.
+- The PDF reader uses the same non-blocking save-failure banner.
+- Reader search reuses the standard HTML tokenizer (x/net/html) for tag
+  and entity stripping (inline elements join, block elements separate);
+  tests cover beginning/end matches and multi-byte text. Removed the
+  unused fullTextAt helper and segment start fields.
+- Cross-repo discipline note: a round-5 commit briefly landed on the
+  PRIMARY branch (`820bbdb`, containing the user's dirty WIP) via a
+  sticky-cwd `git add -A`; recovered with `git reset 1dc5773` (the dirty
+  working state is identical), the commit object is dangling and was never
+  pushed. The round-5 work was then committed in the worktree correctly.
