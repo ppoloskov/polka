@@ -508,3 +508,10 @@ The digest-pinned live deployment was unchanged by publishing; this tag
 supersedes all earlier browsing tags for deployment — the live pin
 (849ed2bc, the reader core) predates the round-4/5 fixes and the JXL
 handling.
+
+Alpha compositing on PR #23 (`4674b6c`): jxlToJPEG encoded transparent
+images straight into JPEG — JPEG has no alpha, so transparent pixels
+became opaque black. The transcode composites alpha-capable decoded
+images (NRGBA/RGBA) onto an opaque white background first; opaque models
+(YCbCr/gray) pass through. Regression test: synthetic transparent
+quadrant → white, opaque strokes keep their color.
