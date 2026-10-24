@@ -187,3 +187,14 @@ features verified present (BookCard author links, BookListPage list-view
 and grouping, SearchPage views); the as-found bundle bytes were lost to a
 dist rebuild before comparison. RULE: every command in cross-repo sessions
 must set workdir explicitly; never rely on sticky cwd.
+
+Round-4 image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-f499986`
+resolves to `sha256:a88f6cd03253c7c9e222888356a92d6862b8c32dd94ad5b15166782033e0ad45`
+for Linux/amd64, built from `codex/image-libraries-browsing` commit `f499986`
+(the complete browsing stack through #22 + the reader experience with all
+four review rounds). Registry digest matched the build metadata and differs
+from all earlier browsing tags. Evidence:
+`/private/tmp/reader-image2/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+The digest-pinned live deployment was unchanged by publishing; this tag
+supersedes all earlier browsing tags for deployment.
