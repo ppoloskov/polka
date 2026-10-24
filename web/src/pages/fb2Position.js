@@ -9,15 +9,15 @@ export const utf16Offset = (text, offset) => Array.from(text).slice(0, offset).j
 const spanTextSegments = (span) => {
   const segments = [];
   const walker = document.createTreeWalker(span, NodeFilter.SHOW_TEXT);
-  let start = 0;
+  let length = 0;
   let node;
   while ((node = walker.nextNode())) {
     if (node.textContent.length > 0) {
-      segments.push({ node, start });
-      start += Array.from(node.textContent).length;
+      segments.push({ node });
+      length += Array.from(node.textContent).length;
     }
   }
-  return { segments, length: start };
+  return { segments, length };
 };
 
 // The text node and child offset for a code-point index in the span's
@@ -31,6 +31,12 @@ const segmentAt = (segments, codeIndex) => {
       return { node: segments[i].node, offset: chars.slice(0, codeIndex - scanned).join("").length };
     }
     scanned += chars.length;
+  }
+  // The total length is a valid position — the end of the last text node —
+  // so capture results at the very end of a span can be restored.
+  if (segments.length > 0 && codeIndex === scanned) {
+    const last = segments[segments.length - 1].node;
+    return { node: last, offset: last.textContent.length };
   }
   return null;
 };
