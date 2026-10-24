@@ -515,3 +515,14 @@ became opaque black. The transcode composites alpha-capable decoded
 images (NRGBA/RGBA) onto an opaque white background first; opaque models
 (YCbCr/gray) pass through. Regression test: synthetic transparent
 quadrant → white, opaque strokes keep their color.
+
+Alpha-compositing image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-4674b6c`
+resolves to `sha256:86b4d230222e4bef8ed284fbac92adc831ee6e50a2adf0a3bb9ce54115ccbb4c`
+for Linux/amd64, built from `codex/image-libraries-browsing` commit
+`4674b6c` (the browsing stack + the reader experience + the JPEG XL
+payload-store handling with alpha compositing). Registry digest matched
+the build metadata and differs from all earlier browsing tags. Evidence:
+`/private/tmp/jxl-white/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+The digest-pinned live deployment was unchanged by publishing; this tag
+supersedes all earlier browsing tags for deployment.
