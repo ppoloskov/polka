@@ -160,6 +160,16 @@ based on #22):
   carries chapter sizes).
 - Sync-mode desktop readers keep their existing routes; the new endpoints
   are server-mode only.
+- Review round 4 (commit `f499986` / `45faed8` on the PR branch): PDF
+  hook-order crash fixed (memos moved above the early returns), search
+  snippets clamp context bounds (beginning/end matches), saveProgress
+  propagates failures (banner works on plain saves), per-library genre
+  counts refresh on publication and disabled-library deletions, FB2
+  position capture/restore walk code-point segments across search `<mark>`
+  fragments, bookmarks joined reference preservation (MaxBookID floor +
+  consolidation transfer) and store real FB2 locators, and the web author
+  page adopted `load more` (limit/offset + hasMore/nextOffset) — closing
+  the author-pagination performance item.
 
 Session-discipline incident (recorded per the review trust contract):
 several shell commands ran without an explicit workdir and executed in the
