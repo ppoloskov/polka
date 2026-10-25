@@ -526,3 +526,17 @@ the build metadata and differs from all earlier browsing tags. Evidence:
 `/private/tmp/jxl-white/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
 The digest-pinned live deployment was unchanged by publishing; this tag
 supersedes all earlier browsing tags for deployment.
+
+Review follow-up on PR #23 (`dddd0c9`): seventeen reader i18n keys were
+missing from both dictionaries — the panel keys (searchInBook, matches*,
+bookmarks/noBookmarks), the typography labels (align, align.left/justify,
+paragraph, indent, hyphens, space.*), the seek-bar aria label (position)
+and reader.delete — the UI displayed raw keys. All added (ru + en); every
+t() key used by the reader now resolves. NOTE: the keys had previously
+landed in the PRIMARY checkout via the sticky-cwd incident — the worktree
+displayed raw keys while the primary's i18n carried the translations
+(reverted during the primary recovery and re-added here).
+
+i18n image publication (no merge or deployment): the browsing tag
+`multiple-libraries-browsing-dddd0c9` (digest recorded after registry
+verification).
