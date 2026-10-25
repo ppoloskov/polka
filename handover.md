@@ -540,3 +540,15 @@ displayed raw keys while the primary's i18n carried the translations
 i18n image publication (no merge or deployment): the browsing tag
 `multiple-libraries-browsing-dddd0c9` (digest recorded after registry
 verification).
+
+i18n image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-dddd0c9`
+resolves to `sha256:8b505d2c430d8e6b38c6babe67b16d8916709b08fbe6332c698973add3b21f2d`
+for Linux/amd64, built from the browsing stack at the i18n-keys commit
+`dddd0c9` (content identical to image-branch commit `dddd0c9` minus the
+handover records, which are not part of the built artifact). Registry
+digest matched the build metadata and differs from all earlier browsing
+tags. Evidence:
+`/private/tmp/i18n-image/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+The digest-pinned live deployment was unchanged by publishing; this tag
+supersedes all earlier browsing tags for deployment.
