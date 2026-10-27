@@ -149,9 +149,13 @@ func (s *Server) handleKosyncUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	ko := &auth.KosyncProgress{Document: req.Document, Progress: progress, Percentage: *req.Percentage, Device: req.Device, DeviceID: req.DeviceID}
 	// Preserve the original device position, while resolving a separate web
-	// locator. Never apply a location to a different FB2 variant's digest.
+	// locator. The digest must be one Polka served for this book
+	// (book_digests only holds digests recorded on download). Served FB2
+	// variants differ from the stored file only by appended <binary>
+	// elements, so the device's body xpointers resolve on the stored parse
+	// even when the file digest differs from the stored one.
 	if bookID, err := s.st.BookIDByDigest(r.Context(), req.Document); err == nil {
-		if text, err := s.bookText(r, bookID); err == nil && text.Digest == req.Document {
+		if text, err := s.bookText(r, bookID); err == nil {
 			if locator, chapter, position, _, ok := text.ResolveFB2Locator(progress); ok {
 				_, err = s.users.SaveBridgedProgress(r.Context(), u.ID, bookID, auth.Progress{Chapter: chapter, Position: position, Overall: *req.Percentage, Locator: storeFB2Position(req.Document, locator)}, nil, ko)
 				if err != nil {
@@ -212,6 +216,26 @@ func (s *Server) handleKosyncGet(w http.ResponseWriter, r *http.Request) {
 	}
 	p, err := s.users.KosyncGet(r.Context(), u.ID, doc)
 	if errors.Is(err, auth.ErrNotFound) {
+		// The device has never pushed for this file. If it was downloaded
+		// through Polka (the digest maps back to the book) and the web
+		// reader has a position, hand the device that position: both sides
+		// read the same FB2 body, so the stored locator applies to the
+		// device's file even when its byte-level digest differs (the file
+		// variants differ only by appended <binary> elements).
+		if bookID, berr := s.st.BookIDByDigest(r.Context(), doc); berr == nil {
+			if prog, perr := s.users.GetProgress(r.Context(), u.ID, bookID); perr == nil {
+				if _, locator := readFB2Position(prog.Locator); locator != "" {
+					writeJSON(w, map[string]any{
+						"document":   doc,
+						"progress":   locator,
+						"percentage": prog.Overall,
+						"device":     "Polka web reader",
+						"device_id":  "polka-web",
+					})
+					return
+				}
+			}
+		}
 		writeJSON(w, map[string]any{}) // the reference server answers 200 with no fields
 		return
 	}
