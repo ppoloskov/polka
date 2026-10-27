@@ -124,13 +124,22 @@ func addLibraryScope(where, alias, libraryID string, args []any) (string, []any)
 }
 
 // bumpCountsTx shifts the maintained totals inside the caller's transaction:
-// the visible book count by the given delta and per-genre counts by code,
-// both globally and for the library that owns the change (the scoped genre
-// list reads per-library counts so the search UI never pays the direct
-// scan). When the totals are not maintained yet, the full computation runs
-// instead — it observes the caller's change because it reads the same
-// transaction. Returns whether the full computation ran.
-func (s *Store) bumpCountsTx(ctx context.Context, tx *sql.Tx, visibleDelta int, genreDeltas map[string]int, libraryID string) (bool, error) {
+// the visible book count by the given delta, per-genre counts by code —
+// globally and for the library that owns the change (the scoped genre list
+// reads per-library counts so the search UI never pays the direct scan).
+// Library deltas describe the library's live membership (deleted=0,
+// missing=0) and apply regardless of the library being enabled; global
+// deltas only count visible books. When the totals are not maintained yet,
+// the full computation runs instead — it already sees the caller's change
+// in the same transaction. Returns whether the full computation ran.
+func (s *Store) bumpCountsTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	visibleDelta int,
+	genreDeltas map[string]int,
+	libraryID string,
+	libraryGenreDeltas map[string]int,
+) (bool, error) {
 	if !s.metaHoldsCountsTx(ctx, tx) {
 		return true, s.maintainCountsTx(ctx, tx)
 	}
@@ -151,21 +160,21 @@ func (s *Store) bumpCountsTx(ctx context.Context, tx *sql.Tx, visibleDelta int, 
 		if err := s.adjustGenreCountsTx(ctx, tx, metaKeysGenreCounts, "", genreDeltas); err != nil {
 			return false, err
 		}
-		if libraryID != "" {
-			// The scoped list key may predate this library's first change;
-			// compute it once from the same transaction instead of
-			// incrementing an unknown baseline.
-			var present string
-			if err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, libraryGenreCountsKey(libraryID)).Scan(&present); err != nil {
-				if !errors.Is(err, sql.ErrNoRows) {
-					return false, err
-				}
-				if err := s.maintainLibraryGenreCountsTx(ctx, tx, libraryID); err != nil {
-					return false, err
-				}
-			} else if err := s.adjustGenreCountsTx(ctx, tx, libraryGenreCountsKey(libraryID), libraryID, genreDeltas); err != nil {
+	}
+	if libraryID != "" && (len(libraryGenreDeltas) > 0) {
+		// The scoped list key may predate this library's first change;
+		// compute it once from the same transaction instead of
+		// incrementing an unknown baseline.
+		var present string
+		if err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, libraryGenreCountsKey(libraryID)).Scan(&present); err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
 				return false, err
 			}
+			if err := s.maintainLibraryGenreCountsTx(ctx, tx, libraryID); err != nil {
+				return false, err
+			}
+		} else if err := s.adjustGenreCountsTx(ctx, tx, libraryGenreCountsKey(libraryID), libraryID, libraryGenreDeltas); err != nil {
+			return false, err
 		}
 	}
 	return false, nil
@@ -828,20 +837,18 @@ func (s *Store) CachedGenresWithCounts(ctx context.Context, libraryIDs ...string
 	return s.GenresWithCounts(ctx)
 }
 
-// CachedGenresForLibrary serves the maintained per-genre list of one library
-// (the scoped genre search): an unavailable library has no scoped list by
-// the availability filter, matching the direct scan. Missing lists are
+// CachedGenresForLibrary serves the maintained per-genre list of one
+// library: the library's live membership (deleted=0, missing=0) regardless
+// of availability — deleting an invisible book must still update it, and
+// re-enabling a library must not resurrect a stale list. Missing lists are
 // computed once transactionally (not written back from read snapshots).
 func (s *Store) CachedGenresForLibrary(ctx context.Context, libraryID string) ([]GenreCount, error) {
-	var enabled int
-	err := s.readDB.QueryRowContext(ctx, `SELECT enabled FROM libraries WHERE id = ?`, libraryID).Scan(&enabled)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
+	var exists int
+	err := s.readDB.QueryRowContext(ctx, `SELECT count(*) FROM libraries WHERE id = ?`, libraryID).Scan(&exists)
 	if err != nil {
 		return nil, err
 	}
-	if enabled != 1 {
+	if exists == 0 {
 		return nil, nil
 	}
 	if v := s.GetMeta(ctx, libraryGenreCountsKey(libraryID), ""); v != "" {

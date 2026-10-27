@@ -710,7 +710,7 @@ func (s *Store) PublishLibrary(ctx context.Context, libraryID string, snapshot *
 	// Record the maintained totals in the same transaction so config and
 	// genre reads are constant-time after the commit (the inline counters
 	// cost seconds on a 1.6M-row catalog).
-	if err := s.maintainCountsTx(ctx, tx); err != nil {
+	if err := s.maintainCountsTx(ctx, tx, libraryID); err != nil {
 		return stats, fmt.Errorf("maintain counts: %w", err)
 	}
 	// Covers can change on any committed publish (the server resets the

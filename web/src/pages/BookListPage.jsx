@@ -49,15 +49,24 @@ const BookListPage = ({ kind, selectedLibraryId = "" }) => {
     setResolvedTitle("");
     setHasMore(false);
     setNextOffset(0);
-    const params = kind === "shelf"
-      ? { shelfId: id, libraryId: selectedLibraryId }
-      : { selectedItemID: id, libraryId: selectedLibraryId };
+    // Author pages page through the list server-side (a prolific author can
+    // carry thousands of books); shelves and series keep their contracts.
+    const params =
+      kind === "shelf"
+        ? { shelfId: id, libraryId: selectedLibraryId }
+        : kind === "author"
+          ? { selectedItemID: id, limit: 60, offset: 0, libraryId: selectedLibraryId }
+          : { selectedItemID: id, libraryId: selectedLibraryId };
     fetcher(params)
       .then((res) => {
         if (cancelled) return;
         setBooks(res?.titlesList ?? []);
         setResolvedTitle(res?.title ?? "");
         if (kind === "shelf") {
+          setHasMore(Boolean(res?.hasMore));
+          setNextOffset(Number(res?.nextOffset ?? (res?.titlesList?.length ?? 0)));
+        }
+        if (kind === "author" && typeof res?.hasMore === "boolean") {
           setHasMore(Boolean(res?.hasMore));
           setNextOffset(Number(res?.nextOffset ?? (res?.titlesList?.length ?? 0)));
         }
@@ -104,9 +113,14 @@ const BookListPage = ({ kind, selectedLibraryId = "" }) => {
   }, [language, languages, loading]);
 
   const loadMore = () => {
-    if (kind !== "shelf" || loadingMore || !hasMore) return;
+    const paged = kind === "shelf" || kind === "author";
+    if (!paged || loadingMore || !hasMore) return;
     setLoadingMore(true);
-    fetchShelfBooks({ shelfId: id, offset: nextOffset, libraryId: selectedLibraryId })
+    const params =
+      kind === "shelf"
+        ? { shelfId: id, offset: nextOffset, libraryId: selectedLibraryId }
+        : { selectedItemID: id, offset: nextOffset, limit: 60, libraryId: selectedLibraryId };
+    fetcher(params)
       .then((res) => {
         const chunk = res?.titlesList ?? [];
         setBooks((prev) => [...prev, ...chunk]);
@@ -226,7 +240,7 @@ const BookListPage = ({ kind, selectedLibraryId = "" }) => {
                   />
                 ))}
               </div>}
-          {kind === "shelf" && hasMore && (
+          {(kind === "shelf" || kind === "author") && hasMore && (
             <div style={{ display: "flex", justifyContent: "center", marginTop: 20 }}>
               <button type="button" className="btn btn-primary" onClick={loadMore} disabled={loadingMore}>
                 {loadingMore ? t("loading") : t("lists.more")}

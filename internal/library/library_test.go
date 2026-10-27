@@ -644,3 +644,54 @@ func base64FromBinary(t *testing.T, data []byte, id string) []byte {
 	}
 	return decoded
 }
+
+// The Flibusta payload stores are largely JPEG XL, which browsers and
+// reader devices cannot display: Binary serves the transcoded image, and
+// CompleteFB2 re-embeds the transcoded image into downloads.
+func TestSidecarJXLNormalizes(t *testing.T) {
+	jxl, err := os.ReadFile(filepath.Join("testdata", "jxl-image.jxl"))
+	if err != nil {
+		t.Skip("no jxl fixture")
+	}
+	if !isJXL(jxl) {
+		t.Fatal("fixture is not jxl")
+	}
+	root := t.TempDir()
+	l := New(root)
+	stripped := `<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+<description><title-info><book-title>Стрип</book-title>
+  <coverpage><image l:href="#cover"/></coverpage></title-info></description>
+<body><section><p>Текст.</p><image l:href="#1"/></section></body>
+</FictionBook>`
+	writeZip(t, filepath.Join(root, "a.zip"), map[string][]byte{"1.fb2": []byte(stripped)})
+	writeZip(t, filepath.Join(root, "covers", "a.zip"), map[string][]byte{"1": pngBytes})
+	writeZip(t, filepath.Join(root, "images", "a.zip"), map[string][]byte{"1/1": jxl})
+
+	// The reader's inline image transcodes to JPEG.
+	data, mime, err := l.Binary("a.zip", "1", "fb2", "1")
+	if err != nil || mime != "image/jpeg" {
+		t.Fatalf("jxl binary = %d %q %v; want jpeg", len(data), mime, err)
+	}
+	if isJXL(data) || data[0] != 0xFF || data[1] != 0xD8 {
+		t.Fatalf("jxl payload was not transcoded: %x", data[:4])
+	}
+
+	// The download re-embeds the transcoded payload.
+	rc, _, err := l.CompleteFB2("a.zip", "1", "fb2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	complete, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(complete), `<binary id="1" content-type="image/jpeg">`) {
+		t.Fatalf("embedded binary is not jpeg: %.200q", complete)
+	}
+	// The cover reference resolves from the covers sidecar as before.
+	if !strings.Contains(string(complete), `<binary id="cover" content-type="image/png">`) {
+		t.Fatalf("embedded cover binary missing: %.200q", complete)
+	}
+}

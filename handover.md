@@ -143,3 +143,58 @@ zero pod restarts, zero ERROR lines, home page ~100µs. Two earlier attempts
 restart; orphaned snapshot staging dirs were removed afterwards. The catalog
 now carries inpx:v2 group keys throughout, so routine updates are exact-key
 matches with no consolidation.
+
+Reader experience delivery on PR #23 (`8bcdbc4`, branch `codex/reader-experience`,
+based on #22):
+- P0 typography: Literata, PT Serif and Noto Serif bundled locally
+  (fontsource packages, cyrillic+latin subsets, no CDN), justification,
+  language-tagged automatic hyphenation (read-meta carries the book
+  language and the reader container sets `lang`), first-line indent and a
+  paragraph-spacing scale; all persist through the reader-prefs API.
+- P1 navigation: in-book search (`GET /api/v1/read/{id}/search`, chapter
+  matches with counts and snippets, in-chapter `<mark>` highlighting on
+  jump), reading bookmarks in users.db (CRUD at
+  `/api/v1/read/{id}/bookmarks`, same-spot saves update, localStorage
+  fallback in public mode) with a 26ab button and a panel tab, and a seekable
+  progress bar weighted by per-chapter rendered sizes (read-meta also
+  carries chapter sizes).
+- Sync-mode desktop readers keep their existing routes; the new endpoints
+  are server-mode only.
+- Review round 4 (commit `f499986` / `45faed8` on the PR branch): PDF
+  hook-order crash fixed (memos moved above the early returns), search
+  snippets clamp context bounds (beginning/end matches), saveProgress
+  propagates failures (banner works on plain saves), per-library genre
+  counts refresh on publication and disabled-library deletions, FB2
+  position capture/restore walk code-point segments across search `<mark>`
+  fragments, bookmarks joined reference preservation (MaxBookID floor +
+  consolidation transfer) and store real FB2 locators, and the web author
+  page adopted `load more` (limit/offset + hasMore/nextOffset) — closing
+  the author-pagination performance item.
+
+Session-discipline incident (recorded per the review trust contract):
+several shell commands ran without an explicit workdir and executed in the
+PRIMARY checkout (`/Users/paul/projects/polka`), receiving stray writes
+(prettier rewraps of fetchBooks/reader/ReaderPage, round-3 i18n keys,
+fontsource deps in web/package.json + lock, one reader.js append) followed
+by an erroneous multi-file `git checkout` revert. Recovery: reverted files
+were reconstructed to their as-found state (ReaderPage.jsx/i18n/reader.js/
+fetchBooks restored, SearchPage.jsx user list-view feature rebuilt from the
+captured diff, package files restored via npm install); the primary's own
+web test suite passes (34 tests / 8 files) and its dist rebuilds. Residual:
+the primary dist content hash differs from its pre-incident build
+(B4HNniqO vs C4L1KZe8) without an identified content difference 2014 all user
+features verified present (BookCard author links, BookListPage list-view
+and grouping, SearchPage views); the as-found bundle bytes were lost to a
+dist rebuild before comparison. RULE: every command in cross-repo sessions
+must set workdir explicitly; never rely on sticky cwd.
+
+Round-4 image publication (no merge or deployment):
+`registry.au.poloskov.net/ppoloskov/polka:multiple-libraries-browsing-f499986`
+resolves to `sha256:a88f6cd03253c7c9e222888356a92d6862b8c32dd94ad5b15166782033e0ad45`
+for Linux/amd64, built from `codex/image-libraries-browsing` commit `f499986`
+(the complete browsing stack through #22 + the reader experience with all
+four review rounds). Registry digest matched the build metadata and differs
+from all earlier browsing tags. Evidence:
+`/private/tmp/reader-image2/{build-metadata.json,registry-manifest.json,registry-headers.txt}`.
+The digest-pinned live deployment was unchanged by publishing; this tag
+supersedes all earlier browsing tags for deployment.

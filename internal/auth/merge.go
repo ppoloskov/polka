@@ -48,6 +48,11 @@ func (s *Service) MergeBookRefs(ctx context.Context, merges []BookRefPair) error
 				 SELECT list_id, ?, added_at FROM list_books WHERE book_id = ?`,
 				`DELETE FROM list_books WHERE book_id = ?`,
 			},
+			{
+				`INSERT OR IGNORE INTO bookmarks (user_id, book_id, chapter, position, locator, label, updated_at)
+				 SELECT user_id, ?, chapter, position, locator, label, datetime('now') FROM bookmarks WHERE book_id = ?`,
+				`DELETE FROM bookmarks WHERE book_id = ?`,
+			},
 		} {
 			if _, err := tx.ExecContext(ctx, table.insert, winner, loser); err != nil {
 				return err
