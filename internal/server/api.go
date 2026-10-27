@@ -555,12 +555,19 @@ func (s *Server) handleBookZip(w http.ResponseWriter, r *http.Request) {
 	if lib == nil {
 		return
 	}
-	rc, _, err := lib.CompleteFB2(f.Folder, f.File, f.Ext)
+	rc, size, err := lib.CompleteFB2(f.Folder, f.File, f.Ext)
 	if err != nil {
 		s.apiError(w, err)
 		return
 	}
 	defer rc.Close()
+
+	// The inner FB2 bytes are digested exactly like a raw download: a book
+	// fetched through OPDS (KOReader takes the zip variant) must still be
+	// recognized by its digest, or kosync cannot map the device's position
+	// back to this book.
+	tee := &digestTee{}
+	var copied int64
 
 	// Build the zip in memory so we can set Content-Length: without it OPDS
 	// clients (MoonReader) hang "at 100%" waiting for the size. An fb2.zip is
@@ -569,7 +576,7 @@ func (s *Server) handleBookZip(w http.ResponseWriter, r *http.Request) {
 	zw := zip.NewWriter(&buf)
 	entry, err := zw.Create(f.File + "." + f.Ext)
 	if err == nil {
-		_, err = io.Copy(entry, rc)
+		copied, err = io.Copy(entry, io.TeeReader(rc, tee))
 	}
 	if err == nil {
 		err = zw.Close()
@@ -579,6 +586,7 @@ func (s *Server) handleBookZip(w http.ResponseWriter, r *http.Request) {
 		s.apiError(w, err)
 		return
 	}
+	s.recordDigest(tee, f.ID, size, copied)
 
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+f.File+`.`+f.Ext+`.zip"`)

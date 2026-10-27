@@ -1,7 +1,10 @@
 package server
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -63,4 +66,98 @@ func TestFB2BidirectionalResume(t *testing.T) {
 		t.Errorf("invalid location: %d", resp.StatusCode)
 	}
 	resp.Body.Close()
+}
+
+// A book downloaded through OPDS goes out as.fb2.zip: its INNER file bytes
+// must be digested and recorded exactly like a raw download, or the device
+// reading that file cannot sync positions with the web reader at all.
+func TestOPDSZipDownloadBridgesKosync(t *testing.T) {
+	ts, client, st := newManageServer(t)
+	var uploaded map[string][]uploadResult
+	decode(t, uploadFiles(t, client, ts.URL+"/admin/books/upload", map[string][]byte{"reader.fb2": []byte(readerFB2)}, nil), &uploaded)
+	id := itoa64(uploaded["results"][0].BookID)
+	postJSON(t, client, ts.URL+"/api/v1/me/kosync", map[string]string{"password": "device-pass-123"}).Body.Close()
+	key := md5hex("device-pass-123")
+
+	// The stored file's digest (what the web reader keys its positions by).
+	meta := getJSONWith(t, client, ts.URL+"/api/v1/read/"+id)
+	storedDigest, ok := meta["digest"].(string)
+	if !ok || len(storedDigest) != 32 {
+		t.Fatalf("digest: %v", meta)
+	}
+
+	// Download through the OPDS acquisition link. The inner entry bytes are
+	// what KOReader digests after unzipping.
+	resp, err := client.Get(ts.URL + "/Images/zip/" + id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("zip download: %d", resp.StatusCode)
+	}
+	innerBody, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(innerBody), int64(len(innerBody)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(zr.File) != 1 {
+		t.Fatalf("zip entries = %d; want one fb2 file", len(zr.File))
+	}
+	rc, err := zr.File[0].Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tee := &digestTee{}
+	if _, err := io.Copy(tee, rc); err != nil {
+		t.Fatal(err)
+	}
+	rc.Close()
+	deviceDigest := tee.digest()
+	if deviceDigest == storedDigest && !strings.Contains(string(innerBody), "<binary") {
+		// Only a re-embedding makes the digests diverge; the fixture may be
+		// complete already.
+		t.Logf("device digest equals the stored digest")
+	}
+	if _, err := st.BookIDByDigest(t.Context(), deviceDigest); err != nil {
+		t.Fatalf("device digest was not recorded: %v", err)
+	}
+
+	// The web reader moves its position.
+	webLocator := "/FictionBook[1]/body[1]/section[1]/p[1]/text()[1].9"
+	resp = postJSON(t, client, ts.URL+"/api/v1/read/"+id+"/progress", map[string]any{
+		"chapter": 0, "position": 0.2, "progress": 0.25, "locator": webLocator, "digest": storedDigest,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("web save: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// The device pulls for ITS digest: it receives the web reader's
+	// position (the body text is identical across the served variants).
+	_, ko := kosyncDo(t, ts.URL, "GET", "/syncs/progress/"+deviceDigest, "admin", key, "")
+	if ko["progress"] != webLocator || ko["device_id"] != "polka-web" {
+		t.Fatalf("web -> device bridge: %v", ko)
+	}
+
+	// The device reads on and pushes its own FB2 location: it bridges back
+	// to the web position even though its file digest differs from the
+	// stored file (the served variant only appends <binary> elements).
+	deviceLocator := "/FictionBook/body[1]/section[1]/p/text().10"
+	push, _ := json.Marshal(map[string]any{
+		"document": deviceDigest, "progress": deviceLocator, "percentage": 0.5, "device": "KOReader", "device_id": "test-device",
+	})
+	if status, body := kosyncDo(t, ts.URL, "PUT", "/syncs/progress", "admin", key, string(push)); status != 200 {
+		t.Fatalf("device push: %d %v", status, body)
+	}
+	p := getJSONWith(t, client, ts.URL+"/api/v1/read/"+id+"/progress")
+	if p["chapter"] != float64(0) || !strings.Contains(p["locator"].(string), "/section[1]/p[1]/text()[1].10") {
+		t.Fatalf("device -> web bridge: %v", p)
+	}
+	if p["progress"] != 0.5 {
+		t.Fatalf("bridged progress = %v; want the device percentage", p["progress"])
+	}
 }
